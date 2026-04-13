@@ -37,7 +37,7 @@ REFRESH_MS = 5000
 BAR_LIMIT = 100
 VISIBLE_BAR_SLOTS = 20
 UPSTREAM_DISPLAY_CAP = 258_000
-DOWNSTREAM_DISPLAY_CAP = 15_000
+DOWNSTREAM_DISPLAY_CAP = 5_000
 WINDOW_BG = "#0d1423"
 SURFACE_BG = "#11192b"
 CARD_BG = "#121c30"
@@ -601,47 +601,29 @@ class TokenMonitorWidget:
         chart_card = tk.Frame(outer, bg=CARD_BG, highlightbackground=BORDER_COLOR, highlightthickness=1)
         chart_card.pack(fill="both", expand=True, padx=12, pady=(12, 8))
 
-        chart_header = tk.Frame(chart_card, bg=CARD_BG)
-        chart_header.pack(fill="x", padx=12, pady=(10, 4))
-
-        tk.Label(chart_header, text="最近 20 次往返", fg=TEXT_PRIMARY, bg=CARD_BG, font=self.title_font).pack(side="left")
-        self.chart_hint = tk.Label(chart_header, text="同色 = 同一轮", fg=TEXT_SOFT, bg=CARD_BG, font=self.small_font)
-        self.chart_hint.pack(side="right")
-
         self.canvas = tk.Canvas(chart_card, height=320, bg=CARD_BG, highlightthickness=0)
-        self.canvas.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        self.canvas.pack(fill="both", expand=True, padx=8, pady=8)
         self.canvas.bind("<Button-1>", self._on_canvas_click)
 
         footer = tk.Frame(outer, bg=SURFACE_BG)
         footer.pack(fill="x", padx=12, pady=(0, 12))
 
-        self.breakdown_label = tk.Label(
-            footer,
-            text="",
-            fg="#d5deeb",
-            bg=SURFACE_BG,
-            justify="left",
-            anchor="w",
-            font=self.small_font,
-        )
-        self.breakdown_label.pack(fill="x")
-
         self.legend_frame = tk.Frame(footer, bg=SURFACE_BG)
-        self.legend_frame.pack(fill="x", pady=(6, 0))
+        self.legend_frame.pack(fill="x")
 
         stats = tk.Frame(outer, bg=SURFACE_BG)
         stats.pack(fill="x", padx=12, pady=(0, 12))
 
         self.today_metric = self._make_metric(stats, "今日概览")
         self.today_metric.pack(side="left", fill="both", expand=True, padx=(0, 4))
-        self.yesterday_metric = self._make_metric(stats, "昨日概览")
+        self.yesterday_metric = self._make_metric(stats, "昨日")
         self.yesterday_metric.pack(side="left", fill="both", expand=True, padx=4)
         self.all_metric = self._make_metric(stats, "累计总量")
         self.all_metric.pack(side="left", fill="both", expand=True, padx=(4, 0))
 
     def _make_metric(self, parent: tk.Widget, title: str) -> tk.Frame:
         frame = tk.Frame(parent, bg=CARD_BG, highlightbackground=BORDER_COLOR, highlightthickness=1)
-        label = tk.Label(frame, text=title, fg="#8fc7ff", bg=CARD_BG, font=self.small_font)
+        label = tk.Label(frame, text=title, fg="#78a2cf", bg=CARD_BG, font=self.small_font)
         label.pack(anchor="w", padx=12, pady=(10, 6))
         value = tk.Label(frame, text="-", fg=TEXT_PRIMARY, bg=CARD_BG, font=self.metric_font)
         value.pack(anchor="w", padx=12)
@@ -710,7 +692,9 @@ class TokenMonitorWidget:
         return text
 
     def _update_footer_labels(self, snapshot: DashboardSnapshot) -> None:
-        self.header_daily_label.config(text="")
+        latest = snapshot.latest_request
+        latest_time = latest.timestamp.strftime("%H:%M:%S") if latest and latest.timestamp else "-"
+        self.header_daily_label.config(text=f"最新 {latest_time}" if latest else "")
 
     def _focus_window(self) -> None:
         self.window.lift()
@@ -858,20 +842,6 @@ class TokenMonitorWidget:
             f"{snapshot.all_session_count} 个会话 / 累计 {snapshot.all_turn_count} 轮 / {len(snapshot.all_requests)} 次往返",
             color=METRIC_YELLOW,
         )
-
-        if latest:
-            latest_time = latest.timestamp.strftime("%H:%M:%S") if latest.timestamp else "-"
-            self.breakdown_label.config(
-                text=(
-                    f"最新 {latest_time}"
-                    f"  |  上行 {fmt_k(latest.upstream_tokens)}"
-                    f"  |  下行 {fmt_k(latest.downstream_tokens)}"
-                    f"  |  缓存 {fmt_k(latest.cached_input_tokens)}"
-                    f"  |  总量 {fmt_k(latest.total_tokens)}"
-                )
-            )
-        else:
-            self.breakdown_label.config(text="暂时还没有请求数据。")
 
         self._render_color_legend()
         self._update_footer_labels(snapshot)
@@ -1647,7 +1617,6 @@ class TokenMonitorWidget:
 
         items = self._chart_items(snapshot)
         visible_items = self._visible_chart_items(snapshot)
-        self.chart_hint.config(text="同色 = 同一轮")
 
         if not visible_items:
             canvas.create_text(
