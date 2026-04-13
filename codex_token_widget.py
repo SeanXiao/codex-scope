@@ -843,7 +843,7 @@ class TokenMonitorWidget:
 
         self._set_metric_title(
             self.today_metric,
-            f"今日（{fmt_duration_cn(snapshot.today_total_duration_seconds)}）",
+            f"今日（耗时 {fmt_duration_cn(snapshot.today_total_duration_seconds)}）",
         )
         self._set_metric(
             self.today_metric,
@@ -855,7 +855,7 @@ class TokenMonitorWidget:
 
         self._set_metric_title(
             self.yesterday_metric,
-            f"昨日（{fmt_duration_cn(snapshot.yesterday_total_duration_seconds)}）",
+            f"昨日（耗时 {fmt_duration_cn(snapshot.yesterday_total_duration_seconds)}）",
         )
         self._set_metric(
             self.yesterday_metric,
