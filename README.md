@@ -12,7 +12,7 @@
 - 看清每次模型往返到底消耗了多少 token
 - 看清当前会话真正送进模型的上下文内容
 - 用一个实时悬浮窗监控最近往返、轮次分组和总量变化
-- 在本地模拟“如果做上下文节流，大概能省多少 token”
+- 生成可直接复制到新会话里的 AI 续聊卡
 
 ## 功能
 
@@ -25,8 +25,8 @@
 - 实时监控窗口  
   可拖拽、置顶、中文界面，支持查看最近往返、按 `turn` 分组、点击柱子看上行/下行详情。
 
-- 节流模拟器  
-  本地模拟 Phase 1 上下文压缩策略，估算理论可节省的输入 token。
+- AI 续聊卡  
+  面向新会话机器输入，保留当前轮重点、文件痕迹和此前 session 脉络。
 
 ## 目录
 
@@ -36,17 +36,8 @@
 - `codex_token_widget.py`  
   悬浮监控窗口。
 
-- `codex_context_throttler.py`  
-  节流模拟器 CLI。
-
-- `codex_context_budget.py`  
-  节流预算策略。
-
-- `codex_context_memory.py`  
-  工作记忆结构。
-
-- `CODEX_CONTEXT_THROTTLING_PLAN.md`  
-  上下文节流设计方案。
+- `codex_continue_summary.py`  
+  AI 续聊卡窗口与续聊卡构建逻辑。
 
 ## 快速开始
 
@@ -108,45 +99,20 @@ python3 codex_context_inspector.py dump-context --latest --call 1 --max-chars 10
 python3 codex_context_inspector.py dump-context --latest --call 1 --json
 ```
 
-运行节流模拟：
-
-```bash
-python3 codex_context_throttler.py --latest
-```
-
-模拟某次具体调用：
-
-```bash
-python3 codex_context_throttler.py --latest --call 3
-```
-
-输出 JSON：
-
-```bash
-python3 codex_context_throttler.py --latest --json
-```
-
 打印最新会话的续聊卡：
 
 ```bash
 /opt/homebrew/bin/python3.13 codex_continue_summary.py --latest
 ```
 
-达到阈值时才输出模拟结果：
-
-```bash
-python3 codex_context_throttler.py simulate --latest --threshold-k 120
-```
-
 ## 说明
 
 - 这个项目分析的是 Codex 本地持久化数据，不是网络抓包层的原始 websocket frame。
 - 监控窗口展示的是“真实已发生的请求”。
-- 节流模拟器给的是“理论可压缩空间”，不会直接改写 Codex 内部上下文。
+- 续聊卡是给新会话继续任务用的机器输入，不会直接改写当前 Codex 内部上下文。
 - 悬浮窗位置和一些状态会记录在 `~/.codex/codex_token_widget.json`。
 
 ## 下一步方向
 
-- 更细的工具输出归因
-- 更稳定的 turn 级压缩摘要
-- 更完整的 harness / context planner 实验
+- 继续打磨监控界面的可读性
+- 继续打磨 AI 续聊卡的压缩质量

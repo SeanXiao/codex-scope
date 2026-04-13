@@ -19,6 +19,7 @@ import threading
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -27,9 +28,7 @@ from tkinter import scrolledtext
 from tkinter import font as tkfont
 from tkinter import messagebox
 
-from codex_context_budget import default_budget_policy
 from codex_context_inspector import detect_codex_home, iter_session_paths, load_threads, parse_session
-from codex_context_throttler import SimulationResult, simulate_call
 
 
 WIDGET_STATE_PATH = Path("~/.codex/codex_token_widget.json").expanduser()
@@ -124,6 +123,29 @@ def fmt_k_compact(value: Optional[int]) -> str:
     return fmt_eng_unit(value, decimals=1)
 
 
+def fmt_eng_unit_no_suffix(value: Optional[int], decimals: int = 1) -> str:
+    if value is None:
+        return "-"
+    abs_value = abs(float(value))
+    sign = "-" if value < 0 else ""
+    units = (
+        1_000_000_000,
+        1_000_000,
+        1_000,
+    )
+    for threshold in units:
+        if abs_value >= threshold:
+            scaled = abs_value / threshold
+            quant = Decimal("1") if decimals <= 0 else Decimal(f"1.{'0' * decimals}")
+            rounded = Decimal(str(scaled)).quantize(quant, rounding=ROUND_HALF_UP)
+            if decimals <= 0:
+                text = str(int(rounded))
+            else:
+                text = f"{rounded:.{decimals}f}".rstrip("0").rstrip(".")
+            return f"{sign}{text}"
+    return f"{sign}{int(abs_value):,}"
+
+
 def fmt_eng_unit(value: Optional[int], decimals: int = 1) -> str:
     if value is None:
         return "-"
@@ -140,6 +162,12 @@ def fmt_eng_unit(value: Optional[int], decimals: int = 1) -> str:
             text = f"{scaled:.{decimals}f}".rstrip("0").rstrip(".")
             return f"{sign}{text}{suffix}"
     return f"{sign}{int(abs_value):,}"
+
+
+def fmt_eng_unit_compact(value: Optional[int]) -> str:
+    if value is None:
+        return "-"
+    return fmt_eng_unit(value, decimals=0)
 
 
 def clamp(value: int, cap: int) -> int:
@@ -525,17 +553,11 @@ class TokenMonitorWidget:
         self.drag_origin: Optional[Tuple[int, int]] = None
         self.refresh_inflight = False
         self.latest_snapshot: Optional[DashboardSnapshot] = None
-        self.latest_throttle_result: Optional[SimulationResult] = None
-        self.latest_throttle_key: Optional[Tuple[str, int]] = None
-        self.chart_throttle_results: Dict[Tuple[str, int], SimulationResult] = {}
         self.after_id: Optional[str] = None
         self.chart_regions: List[Tuple[Tuple[float, float, float, float], RequestPoint, str]] = []
         self.turn_label_regions: List[Tuple[Tuple[float, float, float, float], str]] = []
         self.chart_animation_after: Optional[str] = None
         self.last_chart_keys: Tuple[str, ...] = ()
-        self.throttle_threshold_k = float(self.state.get("throttle_threshold_k", 120))
-        self.throttle_mode = str(self.state.get("throttle_mode", "auto"))
-        self.throttle_policy = default_budget_policy()
 
         self.title_font = tkfont.Font(family="PingFang SC", size=15, weight="bold")
         self.metric_font = tkfont.Font(family="PingFang SC", size=22, weight="bold")
@@ -559,8 +581,6 @@ class TokenMonitorWidget:
         WIDGET_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "geometry": self.window.geometry(),
-            "throttle_threshold_k": self.throttle_threshold_k,
-            "throttle_mode": self.throttle_mode,
         }
         WIDGET_STATE_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -638,6 +658,46 @@ class TokenMonitorWidget:
         dot.bind("<Button-1>", lambda _event: command())
         return dot
 
+    def _make_detail_action_button(
+        self,
+        parent: tk.Widget,
+        *,
+        text: str,
+        command,
+        kind: str = "secondary",
+    ) -> tk.Label:
+        if kind == "primary":
+            bg = DETAIL_TEXT_BG
+            fg = "#dbeafe"
+            hover_bg = "#16233a"
+            hover_fg = "#eff6ff"
+            border = "#35507a"
+        else:
+            bg = DETAIL_TEXT_BG
+            fg = "#cbd5e1"
+            hover_bg = "#18243c"
+            hover_fg = "#f8fafc"
+            border = "#31415f"
+        button = tk.Label(
+            parent,
+            text=text,
+            bg=bg,
+            fg=fg,
+            relief="solid",
+            bd=1,
+            highlightthickness=0,
+            padx=14,
+            pady=7,
+            font=self.tiny_font,
+            cursor="hand2",
+            borderwidth=1,
+        )
+        button.bind("<Button-1>", lambda _event: command())
+        button.bind("<Enter>", lambda _event: button.configure(bg=hover_bg, fg=hover_fg))
+        button.bind("<Leave>", lambda _event: button.configure(bg=bg, fg=fg))
+        button.configure(highlightbackground=border)
+        return button
+
     def _set_metric(self, frame: tk.Frame, value: str, detail: str, color: str = "#f8fafc") -> None:
         frame.value_label.config(text=value, fg=color)  # type: ignore[attr-defined]
         frame.detail_label.config(text=detail)  # type: ignore[attr-defined]
@@ -700,70 +760,6 @@ class TokenMonitorWidget:
         self.window.lift()
         self.window.focus_force()
 
-    def _apply_threshold_from_ui(self, _event=None) -> None:
-        raw = self.throttle_threshold_var.get().strip()
-        try:
-            value = max(float(raw), 1.0)
-        except ValueError:
-            self.throttle_threshold_var.set(str(int(self.throttle_threshold_k)))
-            return
-        self.throttle_threshold_k = value
-        self.throttle_threshold_var.set(str(int(value) if value.is_integer() else value))
-        self._save_state()
-        if self.latest_snapshot is not None:
-            self._apply_snapshot(self.latest_snapshot, self.latest_throttle_result)
-
-    def _apply_throttle_mode_from_ui(self) -> None:
-        self.throttle_mode = self.throttle_mode_var.get().strip() or "auto"
-        self._save_state()
-        if self.throttle_mode == "manual":
-            latest_key = self._latest_request_key(self.latest_snapshot)
-            if latest_key != self.latest_throttle_key:
-                self.latest_throttle_result = None
-                self.latest_throttle_key = None
-        self.refresh_async()
-
-    def _latest_request_key(self, snapshot: Optional[DashboardSnapshot]) -> Optional[Tuple[str, int]]:
-        if snapshot is None or snapshot.latest_request is None:
-            return None
-        item = snapshot.latest_request
-        return (str(item.session_file), item.call_index)
-
-    def _request_key(self, item: RequestPoint) -> Tuple[str, int]:
-        return (str(item.session_file), item.call_index)
-
-    def _compute_throttle_result(self, snapshot: DashboardSnapshot) -> Optional[SimulationResult]:
-        if snapshot.latest_request is None:
-            return None
-        item = snapshot.latest_request
-        result = simulate_call(item.session_file, item.call_index, self.throttle_policy)
-        self.latest_throttle_key = self._request_key(item)
-        return result
-
-    def _compute_chart_throttle_results(self, snapshot: DashboardSnapshot) -> Dict[Tuple[str, int], SimulationResult]:
-        results: Dict[Tuple[str, int], SimulationResult] = {}
-        for item in self._chart_items(snapshot):
-            key = self._request_key(item)
-            cached = self.chart_throttle_results.get(key)
-            if cached is None:
-                cached = simulate_call(item.session_file, item.call_index, self.throttle_policy)
-            results[key] = cached
-        return results
-
-    def _run_throttle_manual(self) -> None:
-        if self.latest_snapshot is None:
-            return
-        try:
-            result = self._compute_throttle_result(self.latest_snapshot)
-        except Exception as exc:
-            self.status_label.config(text=f"节流模拟失败: {exc}")
-            return
-        self.latest_throttle_result = result
-        if result is not None and self.latest_snapshot.latest_request is not None:
-            self.chart_throttle_results[self._request_key(self.latest_snapshot.latest_request)] = result
-        self.status_label.config(text="已手动刷新节流预估")
-        self._apply_snapshot(self.latest_snapshot, result)
-
     def _on_drag_start(self, event: tk.Event) -> None:
         self.drag_origin = (event.x_root, event.y_root)
 
@@ -801,22 +797,9 @@ class TokenMonitorWidget:
         self.status_label.config(text=f"错误: {message}")
         self._schedule_refresh()
 
-    def _apply_snapshot(
-        self,
-        snapshot: DashboardSnapshot,
-        throttle_result: Optional[SimulationResult] = None,
-        chart_throttle_results: Optional[Dict[Tuple[str, int], SimulationResult]] = None,
-    ) -> None:
+    def _apply_snapshot(self, snapshot: DashboardSnapshot) -> None:
         self.refresh_inflight = False
         self.latest_snapshot = snapshot
-        if self.throttle_mode == "auto":
-            self.latest_throttle_result = throttle_result
-            if chart_throttle_results is not None:
-                self.chart_throttle_results.update(chart_throttle_results)
-        else:
-            latest_key = self._latest_request_key(snapshot)
-            if latest_key != self.latest_throttle_key:
-                self.latest_throttle_result = None
         self.status_label.config(text=f"已更新 {snapshot.generated_at.strftime('%H:%M:%S')}")
 
         latest = snapshot.latest_request
@@ -840,7 +823,7 @@ class TokenMonitorWidget:
             self.all_metric,
             fmt_k(snapshot.all_total),
             f"{snapshot.all_session_count} 个会话 / 累计 {snapshot.all_turn_count} 轮 / {len(snapshot.all_requests)} 次往返",
-            color=METRIC_YELLOW,
+            color=METRIC_BLUE,
         )
 
         self._render_color_legend()
@@ -1316,26 +1299,6 @@ class TokenMonitorWidget:
         self.window.update()
         self.status_label.config(text=success_message)
 
-    def _open_v2_for_turn(self, turn_id: str, session_file: Path) -> None:
-        if not session_file:
-            return
-        try:
-            from codex_harness_panel_v2 import HarnessPanelV2
-
-            panel = HarnessPanelV2(
-                codex_home=self.codex_home,
-                refresh_ms=self.refresh_ms,
-                session_path=str(session_file),
-                turn_id=turn_id,
-                parent=self.window,
-            )
-            if not hasattr(self, "_v2_panels"):
-                self._v2_panels = []
-            self._v2_panels.append(panel)
-            self.status_label.config(text="已打开 V2 轮次诊断窗口")
-        except Exception as exc:
-            messagebox.showerror("打开 V2 失败", str(exc))
-
     def _open_continue_summary_for_turn(self, turn_id: str, session_file: Path) -> None:
         if not session_file:
             return
@@ -1353,33 +1316,17 @@ class TokenMonitorWidget:
 
             actions = tk.Frame(detail_window, bg=DETAIL_BG)
             actions.pack(fill="x", padx=12, pady=(0, 8))
-            tk.Button(
+            self._make_detail_action_button(
                 actions,
                 text="复制续聊卡",
                 command=lambda: self._copy_text(summary_text, "已复制本轮续聊卡"),
-                bg="#16a34a",
-                fg="#ecfdf5",
-                activebackground="#22c55e",
-                activeforeground="#ecfdf5",
-                relief="flat",
-                padx=10,
-                pady=5,
-                font=self.tiny_font,
-                cursor="hand2",
+                kind="primary",
             ).pack(side="left", padx=(0, 8))
-            tk.Button(
+            self._make_detail_action_button(
                 actions,
                 text="关闭",
                 command=detail_window.destroy,
-                bg="#1f2937",
-                fg="#e5e7eb",
-                activebackground="#334155",
-                activeforeground="#f8fafc",
-                relief="flat",
-                padx=10,
-                pady=5,
-                font=self.tiny_font,
-                cursor="hand2",
+                kind="secondary",
             ).pack(side="left")
 
             text = self._create_detail_text(detail_window)
@@ -1398,58 +1345,6 @@ class TokenMonitorWidget:
             return
         session_file = requests[-1].session_file
         self._open_continue_summary_for_turn(turn_id, session_file)
-
-    def _open_throttle_detail(self) -> None:
-        result = self.latest_throttle_result
-        if result is None:
-            messagebox.showinfo("节流预估", "当前还没有可用的节流模拟结果。")
-            return
-
-        detail_window = self._create_detail_window(
-            title="节流预估详情",
-            geometry="980x760+180+140",
-            header_text=(
-                f"阈值 {self.throttle_threshold_k:.0f}K"
-                f"  |  压缩前 {fmt_k(result.input_tokens)}"
-                f"  |  压缩后 {fmt_k(result.estimated_compacted_input_tokens)}"
-                f"  |  可省 {fmt_k(result.estimated_saved_tokens)}"
-                f"  |  节省 {result.estimated_saved_ratio * 100:.1f}%"
-            ),
-            subheader_text="这是基于本地 session 的 Phase 1 节流模拟，不会直接修改 Codex 当前请求。",
-            subheader_fg=DETAIL_ACCENT_BLUE,
-        )
-
-        text = self._create_detail_text(detail_window)
-        parts: List[str] = []
-        parts.append(f"session_file: {result.session_file}")
-        parts.append(f"thread_id: {result.thread_id}")
-        parts.append(f"call_index: {result.call_index}")
-        parts.append(f"pressure_before: {result.pressure_before}")
-        parts.append(f"pressure_after: {result.pressure_after}")
-        parts.append("")
-        parts.append("### 压缩前分类")
-        for category, tokens in result.before_category_tokens:
-            parts.append(f"- {category}: {fmt_k(tokens)}")
-        parts.append("")
-        parts.append("### 压缩后分类")
-        for category, tokens in result.after_category_tokens:
-            parts.append(f"- {category}: {fmt_k(tokens)}")
-        parts.append("")
-        parts.append("### 保留策略")
-        for mode, count, chars in result.retention_summary:
-            parts.append(f"- {mode}: {count} 项 / {chars} chars")
-        parts.append("")
-        parts.append("### 最大工具输出")
-        for title, chars in result.top_tool_outputs:
-            parts.append(f"- {title}: {chars} chars")
-        parts.append("")
-        parts.append("### Working Memory Preview")
-        parts.append(f"- current_goal: {result.working_memory.current_goal or '-'}")
-        parts.append(f"- key_files: {', '.join(result.working_memory.key_files) if result.working_memory.key_files else '-'}")
-        parts.append(f"- key_findings: {' | '.join(result.working_memory.key_findings) if result.working_memory.key_findings else '-'}")
-        parts.append(f"- next_step: {result.working_memory.next_step or '-'}")
-        text.insert("1.0", "\n".join(parts))
-        text.configure(state="disabled")
 
     def _open_continue_summary(self) -> None:
         snapshot = self.latest_snapshot
@@ -1471,33 +1366,17 @@ class TokenMonitorWidget:
 
         actions = tk.Frame(detail_window, bg=DETAIL_BG)
         actions.pack(fill="x", padx=12, pady=(0, 8))
-        tk.Button(
+        self._make_detail_action_button(
             actions,
             text="复制续聊卡",
             command=lambda: self._copy_text(summary_text, "已复制当前会话续聊卡"),
-            bg="#16a34a",
-            fg="#ecfdf5",
-            activebackground="#22c55e",
-            activeforeground="#ecfdf5",
-            relief="flat",
-            padx=10,
-            pady=5,
-            font=self.tiny_font,
-            cursor="hand2",
+            kind="primary",
         ).pack(side="left", padx=(0, 8))
-        tk.Button(
+        self._make_detail_action_button(
             actions,
             text="关闭",
             command=detail_window.destroy,
-            bg="#1f2937",
-            fg="#e5e7eb",
-            activebackground="#334155",
-            activeforeground="#f8fafc",
-            relief="flat",
-            padx=10,
-            pady=5,
-            font=self.tiny_font,
-            cursor="hand2",
+            kind="secondary",
         ).pack(side="left")
 
         text = self._create_detail_text(detail_window)
@@ -1718,7 +1597,7 @@ class TokenMonitorWidget:
             canvas.create_text(
                 x,
                 max(top + 10, baseline - up_total_height - 12),
-                text=fmt_k_compact(item.upstream_tokens),
+                text=fmt_eng_unit_no_suffix(item.upstream_tokens, decimals=0),
                 fill="#e2e8f0",
                 font=self.small_font,
             )
@@ -1734,11 +1613,23 @@ class TokenMonitorWidget:
 
         legend_x = left + 4
         legend_y = bottom + 6
-        legend_gap = 16
+        legend_gap = 12
+        legend_labels_default = []
+        legend_labels_compact = []
+        for index, turn_id in enumerate(turn_order):
+            turn_tag = chr(ord("A") + index) if index < 26 else f"T{index + 1}"
+            total_tokens = turn_totals[turn_id]
+            legend_labels_default.append((turn_id, f"{turn_tag} 本轮 {fmt_k_compact(total_tokens)}"))
+            legend_labels_compact.append((turn_id, f"{turn_tag} {fmt_eng_unit_compact(total_tokens)}"))
+
+        available_width = right - (left + 4)
+        default_width = sum(self.tiny_font.measure(label) + legend_gap for _turn_id, label in legend_labels_default)
+        compact_width = sum(self.tiny_font.measure(label) + legend_gap for _turn_id, label in legend_labels_compact)
+        legend_labels = legend_labels_compact if compact_width <= available_width or compact_width < default_width else legend_labels_default
+
         for index, turn_id in enumerate(turn_order):
             turn_up_color, _turn_down_color = turn_colors[turn_id]
-            turn_tag = chr(ord("A") + index) if index < 26 else f"T{index + 1}"
-            label = f"{turn_tag} 本轮 {fmt_k_compact(turn_totals[turn_id])}"
+            label = legend_labels[index][1]
             label_width = self.tiny_font.measure(label) + legend_gap
             if legend_x + label_width > right - 180:
                 legend_x = left + 4

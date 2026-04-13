@@ -675,9 +675,18 @@ class ContinueSummaryWindow:
         command,
         kind: str = "secondary",
     ) -> tk.Label:
-        bg = SURFACE_BG
-        fg = "#f8fafc"
-        border = BORDER_COLOR
+        if kind == "primary":
+            bg = CARD_BG
+            fg = "#dbeafe"
+            hover_bg = "#16233a"
+            hover_fg = "#eff6ff"
+            border = "#35507a"
+        else:
+            bg = CARD_BG
+            fg = "#cbd5e1"
+            hover_bg = "#18243c"
+            hover_fg = "#f8fafc"
+            border = "#31415f"
         button = tk.Label(
             parent,
             text=text,
@@ -693,8 +702,8 @@ class ContinueSummaryWindow:
             borderwidth=1,
         )
         button.bind("<Button-1>", lambda _event: command())
-        button.bind("<Enter>", lambda _event: button.configure(fg="#ffffff"))
-        button.bind("<Leave>", lambda _event: button.configure(fg=fg))
+        button.bind("<Enter>", lambda _event: button.configure(bg=hover_bg, fg=hover_fg))
+        button.bind("<Leave>", lambda _event: button.configure(bg=bg, fg=fg))
         button.configure(highlightbackground=border)
         return button
 
