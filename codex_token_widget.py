@@ -554,21 +554,6 @@ class TokenMonitorWidget:
 
         self.status_label = tk.Label(title_bar, text="加载中...", fg=TEXT_SOFT, bg=TITLE_BG, font=self.tiny_font)
         self.status_label.pack(side="left", padx=(22, 0), pady=11)
-        self.continue_button = tk.Button(
-            title_bar,
-            text="续聊卡",
-            command=self._open_continue_summary,
-            bg="#1d4ed8",
-            fg="#eff6ff",
-            activebackground="#2563eb",
-            activeforeground="#eff6ff",
-            relief="flat",
-            padx=10,
-            pady=4,
-            font=self.tiny_font,
-            cursor="hand2",
-        )
-        self.continue_button.pack(side="right", padx=(0, 12), pady=8)
         self.header_daily_label = tk.Label(
             title_bar,
             text="",

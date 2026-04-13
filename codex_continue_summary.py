@@ -667,6 +667,37 @@ class ContinueSummaryWindow:
         self._build_ui()
         self.root.after(100, self.refresh)
 
+    def _make_mac_button(
+        self,
+        parent: tk.Misc,
+        *,
+        text: str,
+        command,
+        kind: str = "secondary",
+    ) -> tk.Label:
+        bg = SURFACE_BG
+        fg = "#f8fafc"
+        border = BORDER_COLOR
+        button = tk.Label(
+            parent,
+            text=text,
+            bg=bg,
+            fg=fg,
+            relief="solid",
+            bd=1,
+            highlightthickness=0,
+            padx=14,
+            pady=7,
+            font=self.small_font,
+            cursor="hand2",
+            borderwidth=1,
+        )
+        button.bind("<Button-1>", lambda _event: command())
+        button.bind("<Enter>", lambda _event: button.configure(fg="#ffffff"))
+        button.bind("<Leave>", lambda _event: button.configure(fg=fg))
+        button.configure(highlightbackground=border)
+        return button
+
     def _build_ui(self) -> None:
         outer = tk.Frame(self.root, bg=SURFACE_BG, highlightbackground=BORDER_COLOR, highlightthickness=1)
         outer.pack(fill="both", expand=True)
@@ -682,34 +713,10 @@ class ContinueSummaryWindow:
         actions = tk.Frame(outer, bg=SURFACE_BG)
         actions.pack(fill="x", padx=12, pady=(12, 8))
 
-        tk.Button(
-            actions,
-            text="复制续聊卡",
-            command=self.copy_summary,
-            bg=GREEN,
-            fg="#ecfdf5",
-            activebackground="#22c55e",
-            activeforeground="#ecfdf5",
-            relief="flat",
-            padx=12,
-            pady=6,
-            font=self.small_font,
-            cursor="hand2",
-        ).pack(side="left")
-        tk.Button(
-            actions,
-            text="刷新",
-            command=self.refresh,
-            bg="#1f2937",
-            fg="#e5e7eb",
-            activebackground="#334155",
-            activeforeground="#f8fafc",
-            relief="flat",
-            padx=12,
-            pady=6,
-            font=self.small_font,
-            cursor="hand2",
-        ).pack(side="left", padx=(8, 0))
+        self._make_mac_button(actions, text="复制续聊卡", command=self.copy_summary, kind="primary").pack(side="left")
+        self._make_mac_button(actions, text="刷新", command=self.refresh, kind="secondary").pack(
+            side="left", padx=(10, 0)
+        )
 
         helper = tk.Label(
             actions,
