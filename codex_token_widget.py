@@ -214,9 +214,18 @@ class DashboardSnapshot:
     current_turn_total: int
     daily_totals: List[Tuple[date, int]]
     today_requests: List[RequestPoint]
+    yesterday_requests: List[RequestPoint]
     all_requests: List[RequestPoint]
     today_total: int
+    yesterday_total: int
     all_total: int
+    today_new_session_count: int
+    today_turn_count: int
+    yesterday_new_session_count: int
+    yesterday_turn_count: int
+    yesterday_round_trip_count: int
+    all_session_count: int
+    all_turn_count: int
 
 
 class SessionCache:
@@ -257,7 +266,9 @@ class SessionCache:
 
         now = datetime.now().astimezone()
         today = now.date()
+        yesterday = today - timedelta(days=1)
         today_requests = [item for item in all_requests if item.timestamp and item.timestamp.date() == today]
+        yesterday_requests = [item for item in all_requests if item.timestamp and item.timestamp.date() == yesterday]
 
         latest_session = snapshots[-1] if snapshots else None
         latest_request = all_requests[-1] if all_requests else None
@@ -265,6 +276,21 @@ class SessionCache:
         current_turn_id = latest_request.turn_id if latest_request else None
         current_turn_requests = [item for item in all_requests if current_turn_id and item.turn_id == current_turn_id]
         current_turn_total = sum(item.total_tokens for item in current_turn_requests)
+        today_turn_count = len({(item.thread_id, item.turn_id) for item in today_requests})
+        yesterday_turn_count = len({(item.thread_id, item.turn_id) for item in yesterday_requests})
+        all_turn_count = len({(item.thread_id, item.turn_id) for item in all_requests})
+        today_new_session_count = 0
+        yesterday_new_session_count = 0
+        for snapshot in snapshots:
+            if not snapshot.requests:
+                continue
+            first_ts = snapshot.requests[0].timestamp
+            if not first_ts:
+                continue
+            if first_ts.date() == today:
+                today_new_session_count += 1
+            elif first_ts.date() == yesterday:
+                yesterday_new_session_count += 1
         daily_map: Dict[date, int] = {}
         for item in all_requests:
             if item.timestamp:
@@ -275,6 +301,7 @@ class SessionCache:
             day = today - timedelta(days=offset)
             daily_totals.append((day, daily_map.get(day, 0)))
         today_total = sum(item.total_tokens for item in today_requests)
+        yesterday_total = sum(item.total_tokens for item in yesterday_requests)
         all_total = sum(item.total_tokens for item in all_requests)
 
         return DashboardSnapshot(
@@ -287,9 +314,18 @@ class SessionCache:
             current_turn_total=current_turn_total,
             daily_totals=daily_totals,
             today_requests=today_requests,
+            yesterday_requests=yesterday_requests,
             all_requests=all_requests,
             today_total=today_total,
+            yesterday_total=yesterday_total,
             all_total=all_total,
+            today_new_session_count=today_new_session_count,
+            today_turn_count=today_turn_count,
+            yesterday_new_session_count=yesterday_new_session_count,
+            yesterday_turn_count=yesterday_turn_count,
+            yesterday_round_trip_count=len(yesterday_requests),
+            all_session_count=len(snapshots),
+            all_turn_count=all_turn_count,
         )
 
     def _parse_one(self, path: Path, thread_map: Dict[str, object]) -> SessionSnapshot:
@@ -553,7 +589,6 @@ class TokenMonitorWidget:
             title.bind("<ButtonRelease-1>", self._on_drag_end)
 
         self.status_label = tk.Label(title_bar, text="加载中...", fg=TEXT_SOFT, bg=TITLE_BG, font=self.tiny_font)
-        self.status_label.pack(side="left", padx=(22, 0), pady=11)
         self.header_daily_label = tk.Label(
             title_bar,
             text="",
@@ -598,9 +633,11 @@ class TokenMonitorWidget:
         stats.pack(fill="x", padx=12, pady=(0, 12))
 
         self.today_metric = self._make_metric(stats, "今日概览")
-        self.today_metric.pack(side="left", fill="both", expand=True, padx=(0, 6))
+        self.today_metric.pack(side="left", fill="both", expand=True, padx=(0, 4))
+        self.yesterday_metric = self._make_metric(stats, "昨日概览")
+        self.yesterday_metric.pack(side="left", fill="both", expand=True, padx=4)
         self.all_metric = self._make_metric(stats, "累计总量")
-        self.all_metric.pack(side="left", fill="both", expand=True, padx=(6, 0))
+        self.all_metric.pack(side="left", fill="both", expand=True, padx=(4, 0))
 
     def _make_metric(self, parent: tk.Widget, title: str) -> tk.Frame:
         frame = tk.Frame(parent, bg=CARD_BG, highlightbackground=BORDER_COLOR, highlightthickness=1)
@@ -608,7 +645,7 @@ class TokenMonitorWidget:
         label.pack(anchor="w", padx=12, pady=(10, 6))
         value = tk.Label(frame, text="-", fg=TEXT_PRIMARY, bg=CARD_BG, font=self.metric_font)
         value.pack(anchor="w", padx=12)
-        detail = tk.Label(frame, text="", fg=TEXT_MUTED, bg=CARD_BG, font=self.tiny_font)
+        detail = tk.Label(frame, text="", fg=TEXT_MUTED, bg=CARD_BG, font=self.tiny_font, justify="left", anchor="w")
         detail.pack(anchor="w", padx=12, pady=(6, 8))
         frame.value_label = value  # type: ignore[attr-defined]
         frame.detail_label = detail  # type: ignore[attr-defined]
@@ -800,19 +837,25 @@ class TokenMonitorWidget:
 
         latest = snapshot.latest_request
 
-        today_turn_count = len({item.turn_id for item in snapshot.today_requests})
         self._set_metric(
             self.today_metric,
             fmt_k(snapshot.today_total),
-            f"今日 {today_turn_count} 轮 / {len(snapshot.today_requests)} 次往返",
+            f"今日新建 {snapshot.today_new_session_count} 会话 / {snapshot.today_turn_count} 轮 / {len(snapshot.today_requests)} 次往返",
             color=METRIC_BLUE,
         )
 
-        session_count = len({item.thread_id for item in snapshot.all_requests})
+        self._set_metric(
+            self.yesterday_metric,
+            fmt_k(snapshot.yesterday_total),
+            f"昨日新建 {snapshot.yesterday_new_session_count} 会话 / {snapshot.yesterday_turn_count} 轮 / "
+            f"{snapshot.yesterday_round_trip_count} 次往返",
+            color="#8fc7ff",
+        )
+
         self._set_metric(
             self.all_metric,
             fmt_k(snapshot.all_total),
-            f"{session_count} 个会话",
+            f"{snapshot.all_session_count} 个会话 / 累计 {snapshot.all_turn_count} 轮 / {len(snapshot.all_requests)} 次往返",
             color=METRIC_YELLOW,
         )
 
