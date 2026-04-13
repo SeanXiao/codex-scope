@@ -64,6 +64,13 @@ cd /Users/sean_1/codex/codex-tool
 /opt/homebrew/bin/python3.13 codex_token_widget.py
 ```
 
+启动续聊卡窗口：
+
+```bash
+cd /Users/sean_1/codex/codex-tool
+/opt/homebrew/bin/python3.13 codex_continue_summary.py
+```
+
 macOS 双击启动：
 
 - `启动 Codex Token 监控.command`
@@ -117,6 +124,12 @@ python3 codex_context_throttler.py --latest --call 3
 
 ```bash
 python3 codex_context_throttler.py --latest --json
+```
+
+打印最新会话的续聊卡：
+
+```bash
+/opt/homebrew/bin/python3.13 codex_continue_summary.py --latest
 ```
 
 达到阈值时才输出模拟结果：

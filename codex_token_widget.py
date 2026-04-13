@@ -494,6 +494,7 @@ class TokenMonitorWidget:
         self.chart_throttle_results: Dict[Tuple[str, int], SimulationResult] = {}
         self.after_id: Optional[str] = None
         self.chart_regions: List[Tuple[Tuple[float, float, float, float], RequestPoint, str]] = []
+        self.turn_label_regions: List[Tuple[Tuple[float, float, float, float], str]] = []
         self.chart_animation_after: Optional[str] = None
         self.last_chart_keys: Tuple[str, ...] = ()
         self.throttle_threshold_k = float(self.state.get("throttle_threshold_k", 120))
@@ -553,6 +554,21 @@ class TokenMonitorWidget:
 
         self.status_label = tk.Label(title_bar, text="加载中...", fg=TEXT_SOFT, bg=TITLE_BG, font=self.tiny_font)
         self.status_label.pack(side="left", padx=(22, 0), pady=11)
+        self.continue_button = tk.Button(
+            title_bar,
+            text="续聊卡",
+            command=self._open_continue_summary,
+            bg="#1d4ed8",
+            fg="#eff6ff",
+            activebackground="#2563eb",
+            activeforeground="#eff6ff",
+            relief="flat",
+            padx=10,
+            pady=4,
+            font=self.tiny_font,
+            cursor="hand2",
+        )
+        self.continue_button.pack(side="right", padx=(0, 12), pady=8)
         self.header_daily_label = tk.Label(
             title_bar,
             text="",
@@ -560,7 +576,7 @@ class TokenMonitorWidget:
             bg=TITLE_BG,
             font=self.tiny_font,
         )
-        self.header_daily_label.pack(side="right", padx=(0, 14), pady=11)
+        self.header_daily_label.pack(side="right", padx=(0, 8), pady=11)
 
         chart_card = tk.Frame(outer, bg=CARD_BG, highlightbackground=BORDER_COLOR, highlightthickness=1)
         chart_card.pack(fill="both", expand=True, padx=12, pady=(12, 8))
@@ -907,6 +923,10 @@ class TokenMonitorWidget:
         step()
 
     def _on_canvas_click(self, event: tk.Event) -> None:
+        for (x1, y1, x2, y2), turn_id in reversed(self.turn_label_regions):
+            if x1 <= event.x <= x2 and y1 <= event.y <= y2:
+                self._open_turn_detail(turn_id)
+                return
         for (x1, y1, x2, y2), item, direction in reversed(self.chart_regions):
             if x1 <= event.x <= x2 and y1 <= event.y <= y2:
                 if direction == "up":
@@ -1298,6 +1318,89 @@ class TokenMonitorWidget:
         self.window.update()
         self.status_label.config(text=success_message)
 
+    def _open_v2_for_turn(self, turn_id: str, session_file: Path) -> None:
+        if not session_file:
+            return
+        try:
+            from codex_harness_panel_v2 import HarnessPanelV2
+
+            panel = HarnessPanelV2(
+                codex_home=self.codex_home,
+                refresh_ms=self.refresh_ms,
+                session_path=str(session_file),
+                turn_id=turn_id,
+                parent=self.window,
+            )
+            if not hasattr(self, "_v2_panels"):
+                self._v2_panels = []
+            self._v2_panels.append(panel)
+            self.status_label.config(text="已打开 V2 轮次诊断窗口")
+        except Exception as exc:
+            messagebox.showerror("打开 V2 失败", str(exc))
+
+    def _open_continue_summary_for_turn(self, turn_id: str, session_file: Path) -> None:
+        if not session_file:
+            return
+        try:
+            from codex_continue_summary import build_continue_summary
+
+            summary_text = build_continue_summary(session_file, turn_id=turn_id)
+            detail_window = self._create_detail_window(
+                title="本轮续聊卡",
+                geometry="980x760+180+120",
+                header_text=f"turn_id: {turn_id}  |  这张续聊卡只保留这一轮里你和 AI 的对话脉络。",
+                subheader_text="推荐用法: 点底部 A/B/C/D 后，直接在这里复制到新会话继续，不必带工具细节。",
+                subheader_fg=DETAIL_ACCENT_BLUE,
+            )
+
+            actions = tk.Frame(detail_window, bg=DETAIL_BG)
+            actions.pack(fill="x", padx=12, pady=(0, 8))
+            tk.Button(
+                actions,
+                text="复制续聊卡",
+                command=lambda: self._copy_text(summary_text, "已复制本轮续聊卡"),
+                bg="#16a34a",
+                fg="#ecfdf5",
+                activebackground="#22c55e",
+                activeforeground="#ecfdf5",
+                relief="flat",
+                padx=10,
+                pady=5,
+                font=self.tiny_font,
+                cursor="hand2",
+            ).pack(side="left", padx=(0, 8))
+            tk.Button(
+                actions,
+                text="关闭",
+                command=detail_window.destroy,
+                bg="#1f2937",
+                fg="#e5e7eb",
+                activebackground="#334155",
+                activeforeground="#f8fafc",
+                relief="flat",
+                padx=10,
+                pady=5,
+                font=self.tiny_font,
+                cursor="hand2",
+            ).pack(side="left")
+
+            text = self._create_detail_text(detail_window)
+            text.insert("1.0", summary_text)
+            text.configure(state="disabled")
+            self.status_label.config(text="已打开本轮续聊卡")
+        except Exception as exc:
+            messagebox.showerror("打开续聊卡失败", str(exc))
+
+    def _open_turn_detail(self, turn_id: str) -> None:
+        snapshot = self.latest_snapshot
+        if snapshot is None:
+            return
+        requests = [item for item in snapshot.all_requests if item.turn_id == turn_id]
+        if not requests:
+            return
+        session_file = requests[-1].session_file
+        self._open_continue_summary_for_turn(turn_id, session_file)
+
     def _open_throttle_detail(self) -> None:
         result = self.latest_throttle_result
         if result is None:
@@ -1350,20 +1453,21 @@ class TokenMonitorWidget:
         text.insert("1.0", "\n".join(parts))
         text.configure(state="disabled")
 
-    def _open_compact_current_session(self) -> None:
+    def _open_continue_summary(self) -> None:
         snapshot = self.latest_snapshot
         if not snapshot or not snapshot.latest_session:
-            messagebox.showinfo("暂无会话", "当前还没有可压缩的会话数据。")
+            messagebox.showinfo("暂无会话", "当前还没有可用于生成续聊卡的会话数据。")
             return
 
-        parsed = parse_session(snapshot.latest_session.session_file)
-        summary_text = self._build_compact_summary(snapshot.latest_session, parsed)
+        from codex_continue_summary import build_continue_summary
+
+        summary_text = build_continue_summary(snapshot.latest_session.session_file)
 
         detail_window = self._create_detail_window(
-            title="当前会话压缩摘要",
+            title="当前会话续聊卡",
             geometry="980x760+160+120",
-            header_text="这个摘要适合复制到当前会话或新会话里继续接力。它是外部压缩摘要，不会直接改变 Codex 内部上下文。",
-            subheader_text="你可以直接复制这段摘要继续接力，不需要再手动整理历史。",
+            header_text="这张续聊卡只保留你和 AI 的对话脉络，适合直接复制到新会话里继续。",
+            subheader_text="推荐用法: 先看监控定位膨胀，再点这里复制续聊卡到新会话继续。",
             subheader_fg=DETAIL_ACCENT_BLUE,
         )
 
@@ -1371,8 +1475,8 @@ class TokenMonitorWidget:
         actions.pack(fill="x", padx=12, pady=(0, 8))
         tk.Button(
             actions,
-            text="复制摘要",
-            command=lambda: self._copy_text(summary_text, "已复制当前会话压缩摘要"),
+            text="复制续聊卡",
+            command=lambda: self._copy_text(summary_text, "已复制当前会话续聊卡"),
             bg="#16a34a",
             fg="#ecfdf5",
             activebackground="#22c55e",
@@ -1506,6 +1610,7 @@ class TokenMonitorWidget:
         canvas = self.canvas
         canvas.delete("all")
         self.chart_regions = []
+        self.turn_label_regions = []
         viewport_width = max(canvas.winfo_width(), 900)
         height = max(canvas.winfo_height(), 360)
         left = 70
@@ -1642,6 +1747,9 @@ class TokenMonitorWidget:
                 legend_x = left + 4
                 legend_y += 14
             canvas.create_text(legend_x, legend_y, text=label, fill=turn_up_color, font=self.tiny_font, anchor="w")
+            self.turn_label_regions.append(
+                ((legend_x, legend_y - 8, legend_x + label_width - legend_gap / 2, legend_y + 8), turn_id)
+            )
             legend_x += label_width
 
 
