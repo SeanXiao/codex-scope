@@ -115,15 +115,31 @@ def fmt_int(value: Optional[int]) -> str:
 def fmt_k(value: Optional[int]) -> str:
     if value is None:
         return "-"
-    return f"{value / 1000:.1f}K"
+    return fmt_eng_unit(value, decimals=1)
 
 
 def fmt_k_compact(value: Optional[int]) -> str:
     if value is None:
         return "-"
-    if value >= 100000:
-        return f"{value / 1000:.0f}K"
-    return f"{value / 1000:.1f}K"
+    return fmt_eng_unit(value, decimals=1)
+
+
+def fmt_eng_unit(value: Optional[int], decimals: int = 1) -> str:
+    if value is None:
+        return "-"
+    abs_value = abs(float(value))
+    sign = "-" if value < 0 else ""
+    units = (
+        (1_000_000_000, "B"),
+        (1_000_000, "M"),
+        (1_000, "K"),
+    )
+    for threshold, suffix in units:
+        if abs_value >= threshold:
+            scaled = abs_value / threshold
+            text = f"{scaled:.{decimals}f}".rstrip("0").rstrip(".")
+            return f"{sign}{text}{suffix}"
+    return f"{sign}{int(abs_value):,}"
 
 
 def clamp(value: int, cap: int) -> int:
@@ -580,10 +596,8 @@ class TokenMonitorWidget:
         stats = tk.Frame(outer, bg=SURFACE_BG)
         stats.pack(fill="x", padx=12, pady=(0, 12))
 
-        self.latest_metric = self._make_metric(stats, "最新单次往返")
-        self.latest_metric.pack(side="left", fill="both", expand=True, padx=(0, 6))
-        self.today_metric = self._make_metric(stats, "当前指令累计")
-        self.today_metric.pack(side="left", fill="both", expand=True, padx=6)
+        self.today_metric = self._make_metric(stats, "今日概览")
+        self.today_metric.pack(side="left", fill="both", expand=True, padx=(0, 6))
         self.all_metric = self._make_metric(stats, "累计总量")
         self.all_metric.pack(side="left", fill="both", expand=True, padx=(6, 0))
 
@@ -658,12 +672,7 @@ class TokenMonitorWidget:
         return text
 
     def _update_footer_labels(self, snapshot: DashboardSnapshot) -> None:
-        self.header_daily_label.config(
-            text=(
-                f"今日累计: {fmt_k(snapshot.today_total)}"
-                f"  |  今日往返: {len(snapshot.today_requests)} 次"
-            )
-        )
+        self.header_daily_label.config(text="")
 
     def _focus_window(self) -> None:
         self.window.lift()
@@ -789,36 +798,19 @@ class TokenMonitorWidget:
         self.status_label.config(text=f"已更新 {snapshot.generated_at.strftime('%H:%M:%S')}")
 
         latest = snapshot.latest_request
-        previous = snapshot.previous_request
-        delta = latest.total_tokens - previous.total_tokens if latest and previous else None
-        delta_text = "较上一笔 -"
-        if delta is not None:
-            if delta > 0:
-                delta_text = f"较上一笔 +{fmt_k(delta)}"
-            elif delta < 0:
-                delta_text = f"较上一笔 {fmt_k(delta)}"
-            else:
-                delta_text = "较上一笔 0"
 
-        self._set_metric(
-            self.latest_metric,
-            fmt_int(latest.total_tokens if latest else None),
-            delta_text,
-            color=METRIC_PINK,
-        )
-
-        current_turn_count = len(snapshot.current_turn_requests)
+        today_turn_count = len({item.turn_id for item in snapshot.today_requests})
         self._set_metric(
             self.today_metric,
-            fmt_int(snapshot.current_turn_total),
-            f"本轮 {fmt_k(snapshot.current_turn_total)} / {current_turn_count} 次往返",
+            fmt_k(snapshot.today_total),
+            f"今日 {today_turn_count} 轮 / {len(snapshot.today_requests)} 次往返",
             color=METRIC_BLUE,
         )
 
         session_count = len({item.thread_id for item in snapshot.all_requests})
         self._set_metric(
             self.all_metric,
-            fmt_cn_compact(snapshot.all_total),
+            fmt_k(snapshot.all_total),
             f"{session_count} 个会话",
             color=METRIC_YELLOW,
         )
