@@ -1,0 +1,1685 @@
+#!/usr/bin/env python3
+"""
+Floating Codex token monitor widget.
+
+Features:
+- draggable always-on-top widget
+- latest 20 request cells
+- per-request upstream / downstream bars
+- current turn highlighted
+- Chinese UI labels
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import platform
+import threading
+from collections import defaultdict
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
+from typing import Dict, List, Optional, Sequence, Tuple
+
+import tkinter as tk
+from tkinter import scrolledtext
+from tkinter import font as tkfont
+from tkinter import messagebox
+
+from codex_context_budget import default_budget_policy
+from codex_context_inspector import detect_codex_home, iter_session_paths, load_threads, parse_session
+from codex_context_throttler import SimulationResult, simulate_call
+
+
+WIDGET_STATE_PATH = Path("~/.codex/codex_token_widget.json").expanduser()
+REFRESH_MS = 5000
+BAR_LIMIT = 100
+VISIBLE_BAR_SLOTS = 20
+UPSTREAM_DISPLAY_CAP = 258_000
+DOWNSTREAM_DISPLAY_CAP = 15_000
+WINDOW_BG = "#0d1423"
+SURFACE_BG = "#11192b"
+CARD_BG = "#121c30"
+TITLE_BG = "#0a1220"
+BORDER_COLOR = "#2a3a55"
+GRID_COLOR = "#27364d"
+TEXT_PRIMARY = "#f8fafc"
+TEXT_MUTED = "#93a4bf"
+TEXT_SOFT = "#6dd3ff"
+METRIC_PINK = "#ff6b86"
+METRIC_BLUE = "#8ab8ff"
+METRIC_YELLOW = "#ffe14d"
+DETAIL_BG = "#0f172a"
+DETAIL_TEXT_BG = "#111827"
+DETAIL_TEXT_FG = "#e5e7eb"
+DETAIL_ACCENT_BLUE = "#bfdbfe"
+DETAIL_ACCENT_PINK = "#fda4af"
+DETAIL_MUTED = "#e2e8f0"
+TURN_PALETTE: List[Tuple[str, str]] = [
+    ("#ef4444", "#fca5a5"),  # red
+    ("#f97316", "#fdba74"),  # orange
+    ("#eab308", "#fde68a"),  # yellow
+    ("#22c55e", "#86efac"),  # green
+    ("#06b6d4", "#67e8f9"),  # cyan
+    ("#3b82f6", "#93c5fd"),  # blue
+    ("#8b5cf6", "#c4b5fd"),  # violet
+]
+UPSTREAM_ATTR_SPECS: List[Tuple[str, str, str]] = [
+    ("prompt", "prompt", "#38bdf8"),
+    ("memory", "memory", "#8b5cf6"),
+    ("planner", "planner", "#f97316"),
+    ("tool", "tool", "#22c55e"),
+    ("truncation", "truncation", "#f43f5e"),
+    ("cache", "cache", "#fde047"),
+]
+BREAKDOWN_COLORS: Dict[str, str] = {
+    "工具输出": "#22c55e",
+    "历史工具调用": "#16a34a",
+    "开发者提示": "#38bdf8",
+    "历史助手输出": "#8b5cf6",
+    "推理输出": "#f59e0b",
+    "系统提示": "#eab308",
+    "运行上下文": "#f97316",
+    "用户消息": "#f43f5e",
+    "其他": "#94a3b8",
+}
+PIE_FALLBACK_COLORS: List[str] = [
+    "#22c55e",
+    "#16a34a",
+    "#38bdf8",
+    "#8b5cf6",
+    "#f59e0b",
+    "#eab308",
+    "#f97316",
+    "#f43f5e",
+    "#94a3b8",
+]
+
+
+def parse_iso_utc(text: Optional[str]) -> Optional[datetime]:
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).astimezone()
+    except ValueError:
+        return None
+
+
+def fmt_int(value: Optional[int]) -> str:
+    if value is None:
+        return "-"
+    return f"{int(value):,}"
+
+
+def fmt_k(value: Optional[int]) -> str:
+    if value is None:
+        return "-"
+    return f"{value / 1000:.1f}K"
+
+
+def fmt_k_compact(value: Optional[int]) -> str:
+    if value is None:
+        return "-"
+    if value >= 100000:
+        return f"{value / 1000:.0f}K"
+    return f"{value / 1000:.1f}K"
+
+
+def clamp(value: int, cap: int) -> int:
+    return max(0, min(value, cap))
+
+
+def fmt_cn_compact(value: Optional[int]) -> str:
+    if value is None:
+        return "-"
+    abs_value = abs(int(value))
+    sign = "-" if value < 0 else ""
+    if abs_value < 10000:
+        return f"{sign}{abs_value:,}"
+    if abs_value < 100000000:
+        scaled = abs_value / 10000
+        text = f"{scaled:.1f}".rstrip("0").rstrip(".")
+        return f"{sign}{text}万"
+    scaled = abs_value / 100000000
+    text = f"{scaled:.1f}".rstrip("0").rstrip(".")
+    return f"{sign}{text}亿"
+
+
+def shorten(text: str, max_chars: int) -> str:
+    if max_chars <= 0 or len(text) <= max_chars:
+        return text
+    return text[: max_chars - 3] + "..."
+
+
+@dataclass
+class RequestPoint:
+    thread_id: str
+    turn_id: str
+    session_file: Path
+    call_index: int
+    timestamp: Optional[datetime]
+    total_tokens: int
+    input_tokens: int
+    cached_input_tokens: int
+    output_tokens: int
+    reasoning_output_tokens: int
+    user_text: str = ""
+    upstream_breakdown: Tuple[Tuple[str, int, int], ...] = ()
+    downstream_breakdown: Tuple[Tuple[str, int, int], ...] = ()
+
+    @property
+    def upstream_tokens(self) -> int:
+        return self.input_tokens
+
+    @property
+    def downstream_tokens(self) -> int:
+        return self.output_tokens + self.reasoning_output_tokens
+
+
+@dataclass
+class SessionSnapshot:
+    thread_id: str
+    session_file: Path
+    title: str
+    updated_at: int
+    total_tokens: int
+    requests: List[RequestPoint]
+
+
+@dataclass
+class DashboardSnapshot:
+    generated_at: datetime
+    latest_session: Optional[SessionSnapshot]
+    latest_request: Optional[RequestPoint]
+    previous_request: Optional[RequestPoint]
+    current_turn_id: Optional[str]
+    current_turn_requests: List[RequestPoint]
+    current_turn_total: int
+    daily_totals: List[Tuple[date, int]]
+    today_requests: List[RequestPoint]
+    all_requests: List[RequestPoint]
+    today_total: int
+    all_total: int
+
+
+class SessionCache:
+    def __init__(self, codex_home: Path) -> None:
+        self.codex_home = codex_home
+        self._cache: Dict[Path, Tuple[int, int, SessionSnapshot]] = {}
+
+    def refresh(self) -> DashboardSnapshot:
+        thread_map = load_threads(self.codex_home)
+        snapshots: List[SessionSnapshot] = []
+        seen_paths = set()
+
+        for path in iter_session_paths(self.codex_home):
+            try:
+                stat = path.stat()
+            except FileNotFoundError:
+                continue
+            key = (int(stat.st_mtime_ns), int(stat.st_size))
+            cached = self._cache.get(path)
+            if cached and cached[0] == key[0] and cached[1] == key[1]:
+                snapshot = cached[2]
+            else:
+                snapshot = self._parse_one(path, thread_map)
+                self._cache[path] = (key[0], key[1], snapshot)
+            snapshots.append(snapshot)
+            seen_paths.add(path)
+
+        stale = [path for path in self._cache if path not in seen_paths]
+        for path in stale:
+            del self._cache[path]
+
+        snapshots.sort(key=lambda item: item.updated_at)
+        all_requests: List[RequestPoint] = []
+        for snapshot in snapshots:
+            all_requests.extend(snapshot.requests)
+        fallback = datetime.min.replace(tzinfo=timezone.utc).astimezone()
+        all_requests.sort(key=lambda item: (item.timestamp or fallback, item.thread_id, item.call_index))
+
+        now = datetime.now().astimezone()
+        today = now.date()
+        today_requests = [item for item in all_requests if item.timestamp and item.timestamp.date() == today]
+
+        latest_session = snapshots[-1] if snapshots else None
+        latest_request = all_requests[-1] if all_requests else None
+        previous_request = all_requests[-2] if len(all_requests) >= 2 else None
+        current_turn_id = latest_request.turn_id if latest_request else None
+        current_turn_requests = [item for item in all_requests if current_turn_id and item.turn_id == current_turn_id]
+        current_turn_total = sum(item.total_tokens for item in current_turn_requests)
+        daily_map: Dict[date, int] = {}
+        for item in all_requests:
+            if item.timestamp:
+                day = item.timestamp.date()
+                daily_map[day] = daily_map.get(day, 0) + item.total_tokens
+        daily_totals = []
+        for offset in range(6, -1, -1):
+            day = today - timedelta(days=offset)
+            daily_totals.append((day, daily_map.get(day, 0)))
+        today_total = sum(item.total_tokens for item in today_requests)
+        all_total = sum(item.total_tokens for item in all_requests)
+
+        return DashboardSnapshot(
+            generated_at=now,
+            latest_session=latest_session,
+            latest_request=latest_request,
+            previous_request=previous_request,
+            current_turn_id=current_turn_id,
+            current_turn_requests=current_turn_requests,
+            current_turn_total=current_turn_total,
+            daily_totals=daily_totals,
+            today_requests=today_requests,
+            all_requests=all_requests,
+            today_total=today_total,
+            all_total=all_total,
+        )
+
+    def _parse_one(self, path: Path, thread_map: Dict[str, object]) -> SessionSnapshot:
+        parsed = parse_session(path)
+        record = thread_map.get(parsed.thread_id or "")
+        requests: List[RequestPoint] = []
+        for call in parsed.calls:
+            usage = call.usage or {}
+            total_tokens = int(usage.get("total_tokens") or 0)
+            if total_tokens <= 0:
+                continue
+            context_items = parsed.transcript_pool[: call.context_end_index]
+            requests.append(
+                RequestPoint(
+                    thread_id=parsed.thread_id or "unknown",
+                    turn_id=call.turn_id or "unknown",
+                    session_file=path,
+                    call_index=call.index,
+                    timestamp=parse_iso_utc(call.started_at),
+                    total_tokens=total_tokens,
+                    input_tokens=int(usage.get("input_tokens") or 0),
+                    cached_input_tokens=int(usage.get("cached_input_tokens") or 0),
+                    output_tokens=int(usage.get("output_tokens") or 0),
+                    reasoning_output_tokens=int(usage.get("reasoning_output_tokens") or 0),
+                    user_text=self._latest_user_text(context_items),
+                    upstream_breakdown=tuple(
+                        self._estimate_upstream_breakdown_static(
+                            context_items,
+                            int(usage.get("input_tokens") or 0),
+                        )
+                    ),
+                    downstream_breakdown=tuple(
+                        self._estimate_downstream_breakdown_static(
+                            call.output_items,
+                            int(usage.get("output_tokens") or 0),
+                            int(usage.get("reasoning_output_tokens") or 0),
+                        )
+                    ),
+                )
+            )
+
+        if parsed.exact_total_tokens is not None:
+            total_tokens = parsed.exact_total_tokens
+        elif record is not None:
+            total_tokens = int(getattr(record, "tokens_used", 0) or 0)
+        else:
+            total_tokens = sum(item.total_tokens for item in requests)
+
+        title = getattr(record, "title", "") if record is not None else ""
+        updated_at = getattr(record, "updated_at", 0) if record is not None else 0
+        if not updated_at:
+            try:
+                updated_at = int(path.stat().st_mtime * 1000)
+            except FileNotFoundError:
+                updated_at = 0
+
+        return SessionSnapshot(
+            thread_id=parsed.thread_id or "unknown",
+            session_file=path,
+            title=title.strip() or path.stem,
+            updated_at=updated_at,
+            total_tokens=total_tokens,
+            requests=requests,
+        )
+
+    def _latest_user_text(self, context_items: Sequence[object]) -> str:
+        for item in reversed(context_items):
+            if getattr(item, "role", "") == "user" and getattr(item, "kind", "") == "message":
+                return getattr(item, "text", "") or ""
+        return ""
+
+    def _category_label_static(self, ctx: object) -> str:
+        role = getattr(ctx, "role", "")
+        kind = getattr(ctx, "kind", "")
+        title = getattr(ctx, "title", "")
+        if kind == "base_instructions":
+            return "系统提示"
+        if role == "developer":
+            return "开发者提示"
+        if role == "user":
+            return "用户消息"
+        if kind == "turn_context":
+            return "运行上下文"
+        if role == "tool":
+            return "工具输出"
+        if role == "assistant" and kind == "function_call":
+            return "历史工具调用"
+        if role == "assistant":
+            return "历史助手输出"
+        return title or kind or role or "其他"
+
+    def _estimate_upstream_breakdown_static(
+        self,
+        context_items: Sequence[object],
+        input_tokens: int,
+    ) -> List[Tuple[str, int, int]]:
+        category_weights: Dict[str, int] = defaultdict(int)
+        category_counts: Dict[str, int] = defaultdict(int)
+        for ctx in context_items:
+            label = self._category_label_static(ctx)
+            text = getattr(ctx, "text", "") or ""
+            weight = max(len(text), 1)
+            category_weights[label] += weight
+            category_counts[label] += 1
+
+        total_weight = sum(category_weights.values())
+        if total_weight <= 0:
+            return []
+
+        raw_allocations = [(label, input_tokens * weight / total_weight) for label, weight in category_weights.items()]
+        floored: Dict[str, int] = {label: int(value) for label, value in raw_allocations}
+        remain = input_tokens - sum(floored.values())
+        ranked = sorted(raw_allocations, key=lambda item: item[1] - int(item[1]), reverse=True)
+        for idx in range(remain):
+            floored[ranked[idx % len(ranked)][0]] += 1
+
+        rows = [(label, floored[label], category_counts[label]) for label in floored]
+        rows.sort(key=lambda item: item[1], reverse=True)
+        return rows
+
+    def _downstream_label_static(self, out: object) -> str:
+        role = getattr(out, "role", "")
+        kind = getattr(out, "kind", "")
+        if kind == "reasoning":
+            return "推理输出"
+        if role == "assistant" and kind == "function_call":
+            return "历史工具调用"
+        if role == "assistant":
+            return "历史助手输出"
+        return "其他"
+
+    def _estimate_downstream_breakdown_static(
+        self,
+        output_items: Sequence[object],
+        output_tokens: int,
+        reasoning_output_tokens: int,
+    ) -> List[Tuple[str, int, int]]:
+        allocations: Dict[str, int] = defaultdict(int)
+        counts: Dict[str, int] = defaultdict(int)
+
+        if reasoning_output_tokens > 0:
+            allocations["推理输出"] += reasoning_output_tokens
+            counts["推理输出"] += sum(1 for out in output_items if getattr(out, "kind", "") == "reasoning")
+
+        weighted_items: List[Tuple[str, int]] = []
+        for out in output_items:
+            if getattr(out, "kind", "") == "reasoning":
+                continue
+            label = self._downstream_label_static(out)
+            text = getattr(out, "text", "") or ""
+            weight = max(len(text), 1)
+            weighted_items.append((label, weight))
+            counts[label] += 1
+
+        if output_tokens > 0:
+            total_weight = sum(weight for _label, weight in weighted_items)
+            if total_weight <= 0:
+                allocations["历史助手输出"] += output_tokens
+                counts["历史助手输出"] += 1
+            else:
+                raw_allocations = [(label, output_tokens * weight / total_weight) for label, weight in weighted_items]
+                floored: Dict[str, int] = defaultdict(int)
+                for label, value in raw_allocations:
+                    floored[label] += int(value)
+                remain = output_tokens - sum(floored.values())
+                ranked = sorted(raw_allocations, key=lambda item: item[1] - int(item[1]), reverse=True)
+                for idx in range(remain):
+                    floored[ranked[idx % len(ranked)][0]] += 1
+                for label, value in floored.items():
+                    allocations[label] += value
+
+        rows = [(label, allocations[label], counts[label]) for label in allocations]
+        rows.sort(key=lambda item: item[1], reverse=True)
+        return rows
+
+
+class TokenMonitorWidget:
+    def __init__(self, codex_home: Path, refresh_ms: int = REFRESH_MS) -> None:
+        self.codex_home = codex_home
+        self.refresh_ms = refresh_ms
+        self.cache = SessionCache(codex_home)
+        self.is_macos = platform.system() == "Darwin"
+        self.use_borderless = not self.is_macos
+        self.root = tk.Tk()
+        self.root.withdraw()
+        self.window = tk.Toplevel(self.root)
+        self.window.overrideredirect(self.use_borderless)
+        self.window.attributes("-topmost", True)
+        self.window.title("Codex Token 监控")
+        self.window.configure(bg=WINDOW_BG)
+
+        self.state = self._load_state()
+        geometry = self.state.get("geometry", "920x534+60+80")
+        self.window.geometry(geometry)
+        self.window.minsize(900, 520)
+
+        self.drag_origin: Optional[Tuple[int, int]] = None
+        self.refresh_inflight = False
+        self.latest_snapshot: Optional[DashboardSnapshot] = None
+        self.latest_throttle_result: Optional[SimulationResult] = None
+        self.latest_throttle_key: Optional[Tuple[str, int]] = None
+        self.chart_throttle_results: Dict[Tuple[str, int], SimulationResult] = {}
+        self.after_id: Optional[str] = None
+        self.chart_regions: List[Tuple[Tuple[float, float, float, float], RequestPoint, str]] = []
+        self.chart_animation_after: Optional[str] = None
+        self.last_chart_keys: Tuple[str, ...] = ()
+        self.throttle_threshold_k = float(self.state.get("throttle_threshold_k", 120))
+        self.throttle_mode = str(self.state.get("throttle_mode", "auto"))
+        self.throttle_policy = default_budget_policy()
+
+        self.title_font = tkfont.Font(family="PingFang SC", size=15, weight="bold")
+        self.metric_font = tkfont.Font(family="PingFang SC", size=22, weight="bold")
+        self.small_font = tkfont.Font(family="PingFang SC", size=11)
+        self.tiny_font = tkfont.Font(family="PingFang SC", size=10)
+
+        self._build_ui()
+        self.window.deiconify()
+        self.window.after(100, self.refresh_async)
+        self.window.protocol("WM_DELETE_WINDOW", self.close)
+
+    def _load_state(self) -> Dict[str, object]:
+        if WIDGET_STATE_PATH.exists():
+            try:
+                return json.loads(WIDGET_STATE_PATH.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                return {}
+        return {}
+
+    def _save_state(self) -> None:
+        WIDGET_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "geometry": self.window.geometry(),
+            "throttle_threshold_k": self.throttle_threshold_k,
+            "throttle_mode": self.throttle_mode,
+        }
+        WIDGET_STATE_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _build_ui(self) -> None:
+        outer = tk.Frame(self.window, bg=SURFACE_BG, highlightbackground=BORDER_COLOR, highlightthickness=1)
+        outer.pack(fill="both", expand=True)
+
+        title_bar = tk.Frame(outer, bg=TITLE_BG, height=44)
+        title_bar.pack(fill="x")
+        if self.use_borderless:
+            title_bar.bind("<ButtonPress-1>", self._on_drag_start)
+            title_bar.bind("<B1-Motion>", self._on_drag_move)
+            title_bar.bind("<ButtonRelease-1>", self._on_drag_end)
+
+            controls = tk.Frame(title_bar, bg=TITLE_BG)
+            controls.pack(side="left", padx=(12, 8), pady=8)
+            self._make_title_dot(controls, "#ff5f57", self.close).pack(side="left", padx=(0, 8))
+            self._make_title_dot(controls, "#febc2e", self.refresh_async).pack(side="left", padx=(0, 8))
+            self._make_title_dot(controls, "#28c840", self._focus_window).pack(side="left")
+
+        title = tk.Label(title_bar, text="Codex Token 监控", fg=TEXT_PRIMARY, bg=TITLE_BG, font=self.title_font)
+        title.pack(side="left", padx=(14 if self.use_borderless else 18, 0), pady=10)
+        if self.use_borderless:
+            title.bind("<ButtonPress-1>", self._on_drag_start)
+            title.bind("<B1-Motion>", self._on_drag_move)
+            title.bind("<ButtonRelease-1>", self._on_drag_end)
+
+        self.status_label = tk.Label(title_bar, text="加载中...", fg=TEXT_SOFT, bg=TITLE_BG, font=self.tiny_font)
+        self.status_label.pack(side="left", padx=(22, 0), pady=11)
+        self.header_daily_label = tk.Label(
+            title_bar,
+            text="",
+            fg=TEXT_MUTED,
+            bg=TITLE_BG,
+            font=self.tiny_font,
+        )
+        self.header_daily_label.pack(side="right", padx=(0, 14), pady=11)
+
+        chart_card = tk.Frame(outer, bg=CARD_BG, highlightbackground=BORDER_COLOR, highlightthickness=1)
+        chart_card.pack(fill="both", expand=True, padx=12, pady=(12, 8))
+
+        chart_header = tk.Frame(chart_card, bg=CARD_BG)
+        chart_header.pack(fill="x", padx=12, pady=(10, 4))
+
+        tk.Label(chart_header, text="最近 20 次往返", fg=TEXT_PRIMARY, bg=CARD_BG, font=self.title_font).pack(side="left")
+        self.chart_hint = tk.Label(chart_header, text="同色 = 同一轮", fg=TEXT_SOFT, bg=CARD_BG, font=self.small_font)
+        self.chart_hint.pack(side="right")
+
+        self.canvas = tk.Canvas(chart_card, height=320, bg=CARD_BG, highlightthickness=0)
+        self.canvas.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        self.canvas.bind("<Button-1>", self._on_canvas_click)
+
+        footer = tk.Frame(outer, bg=SURFACE_BG)
+        footer.pack(fill="x", padx=12, pady=(0, 12))
+
+        self.breakdown_label = tk.Label(
+            footer,
+            text="",
+            fg="#d5deeb",
+            bg=SURFACE_BG,
+            justify="left",
+            anchor="w",
+            font=self.small_font,
+        )
+        self.breakdown_label.pack(fill="x")
+
+        self.legend_frame = tk.Frame(footer, bg=SURFACE_BG)
+        self.legend_frame.pack(fill="x", pady=(6, 0))
+
+        stats = tk.Frame(outer, bg=SURFACE_BG)
+        stats.pack(fill="x", padx=12, pady=(0, 12))
+
+        self.latest_metric = self._make_metric(stats, "最新单次往返")
+        self.latest_metric.pack(side="left", fill="both", expand=True, padx=(0, 6))
+        self.today_metric = self._make_metric(stats, "当前指令累计")
+        self.today_metric.pack(side="left", fill="both", expand=True, padx=6)
+        self.all_metric = self._make_metric(stats, "累计总量")
+        self.all_metric.pack(side="left", fill="both", expand=True, padx=(6, 0))
+
+    def _make_metric(self, parent: tk.Widget, title: str) -> tk.Frame:
+        frame = tk.Frame(parent, bg=CARD_BG, highlightbackground=BORDER_COLOR, highlightthickness=1)
+        label = tk.Label(frame, text=title, fg="#8fc7ff", bg=CARD_BG, font=self.small_font)
+        label.pack(anchor="w", padx=12, pady=(10, 6))
+        value = tk.Label(frame, text="-", fg=TEXT_PRIMARY, bg=CARD_BG, font=self.metric_font)
+        value.pack(anchor="w", padx=12)
+        detail = tk.Label(frame, text="", fg=TEXT_MUTED, bg=CARD_BG, font=self.tiny_font)
+        detail.pack(anchor="w", padx=12, pady=(6, 8))
+        frame.value_label = value  # type: ignore[attr-defined]
+        frame.detail_label = detail  # type: ignore[attr-defined]
+        return frame
+
+    def _make_title_dot(self, parent: tk.Widget, color: str, command) -> tk.Label:
+        dot = tk.Label(parent, text="●", fg=color, bg=TITLE_BG, cursor="hand2", font=self.small_font)
+        dot.bind("<Button-1>", lambda _event: command())
+        return dot
+
+    def _set_metric(self, frame: tk.Frame, value: str, detail: str, color: str = "#f8fafc") -> None:
+        frame.value_label.config(text=value, fg=color)  # type: ignore[attr-defined]
+        frame.detail_label.config(text=detail)  # type: ignore[attr-defined]
+
+    def _create_detail_window(
+        self,
+        title: str,
+        geometry: str,
+        header_text: str,
+        subheader_text: str,
+        subheader_fg: str,
+    ) -> tk.Toplevel:
+        detail_window = tk.Toplevel(self.window)
+        detail_window.title(title)
+        detail_window.geometry(geometry)
+        detail_window.configure(bg=DETAIL_BG)
+
+        header = tk.Label(
+            detail_window,
+            text=header_text,
+            fg=DETAIL_MUTED,
+            bg=DETAIL_BG,
+            anchor="w",
+            justify="left",
+            font=self.small_font,
+        )
+        header.pack(fill="x", padx=12, pady=(12, 8))
+
+        subheader = tk.Label(
+            detail_window,
+            text=subheader_text,
+            fg=subheader_fg,
+            bg=DETAIL_BG,
+            anchor="w",
+            justify="left",
+            font=self.tiny_font,
+        )
+        subheader.pack(fill="x", padx=12, pady=(0, 8))
+        return detail_window
+
+    def _create_detail_text(self, parent: tk.Widget) -> scrolledtext.ScrolledText:
+        text = scrolledtext.ScrolledText(
+            parent,
+            wrap="word",
+            bg=DETAIL_TEXT_BG,
+            fg=DETAIL_TEXT_FG,
+            insertbackground=DETAIL_TEXT_FG,
+            relief="flat",
+            font=("Menlo", 11),
+        )
+        text.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        return text
+
+    def _update_footer_labels(self, snapshot: DashboardSnapshot) -> None:
+        self.header_daily_label.config(
+            text=(
+                f"今日累计: {fmt_k(snapshot.today_total)}"
+                f"  |  今日往返: {len(snapshot.today_requests)} 次"
+            )
+        )
+
+    def _focus_window(self) -> None:
+        self.window.lift()
+        self.window.focus_force()
+
+    def _apply_threshold_from_ui(self, _event=None) -> None:
+        raw = self.throttle_threshold_var.get().strip()
+        try:
+            value = max(float(raw), 1.0)
+        except ValueError:
+            self.throttle_threshold_var.set(str(int(self.throttle_threshold_k)))
+            return
+        self.throttle_threshold_k = value
+        self.throttle_threshold_var.set(str(int(value) if value.is_integer() else value))
+        self._save_state()
+        if self.latest_snapshot is not None:
+            self._apply_snapshot(self.latest_snapshot, self.latest_throttle_result)
+
+    def _apply_throttle_mode_from_ui(self) -> None:
+        self.throttle_mode = self.throttle_mode_var.get().strip() or "auto"
+        self._save_state()
+        if self.throttle_mode == "manual":
+            latest_key = self._latest_request_key(self.latest_snapshot)
+            if latest_key != self.latest_throttle_key:
+                self.latest_throttle_result = None
+                self.latest_throttle_key = None
+        self.refresh_async()
+
+    def _latest_request_key(self, snapshot: Optional[DashboardSnapshot]) -> Optional[Tuple[str, int]]:
+        if snapshot is None or snapshot.latest_request is None:
+            return None
+        item = snapshot.latest_request
+        return (str(item.session_file), item.call_index)
+
+    def _request_key(self, item: RequestPoint) -> Tuple[str, int]:
+        return (str(item.session_file), item.call_index)
+
+    def _compute_throttle_result(self, snapshot: DashboardSnapshot) -> Optional[SimulationResult]:
+        if snapshot.latest_request is None:
+            return None
+        item = snapshot.latest_request
+        result = simulate_call(item.session_file, item.call_index, self.throttle_policy)
+        self.latest_throttle_key = self._request_key(item)
+        return result
+
+    def _compute_chart_throttle_results(self, snapshot: DashboardSnapshot) -> Dict[Tuple[str, int], SimulationResult]:
+        results: Dict[Tuple[str, int], SimulationResult] = {}
+        for item in self._chart_items(snapshot):
+            key = self._request_key(item)
+            cached = self.chart_throttle_results.get(key)
+            if cached is None:
+                cached = simulate_call(item.session_file, item.call_index, self.throttle_policy)
+            results[key] = cached
+        return results
+
+    def _run_throttle_manual(self) -> None:
+        if self.latest_snapshot is None:
+            return
+        try:
+            result = self._compute_throttle_result(self.latest_snapshot)
+        except Exception as exc:
+            self.status_label.config(text=f"节流模拟失败: {exc}")
+            return
+        self.latest_throttle_result = result
+        if result is not None and self.latest_snapshot.latest_request is not None:
+            self.chart_throttle_results[self._request_key(self.latest_snapshot.latest_request)] = result
+        self.status_label.config(text="已手动刷新节流预估")
+        self._apply_snapshot(self.latest_snapshot, result)
+
+    def _on_drag_start(self, event: tk.Event) -> None:
+        self.drag_origin = (event.x_root, event.y_root)
+
+    def _on_drag_move(self, event: tk.Event) -> None:
+        if self.drag_origin is None:
+            return
+        dx = event.x_root - self.drag_origin[0]
+        dy = event.y_root - self.drag_origin[1]
+        x = self.window.winfo_x() + dx
+        y = self.window.winfo_y() + dy
+        self.window.geometry(f"+{x}+{y}")
+        self.drag_origin = (event.x_root, event.y_root)
+
+    def _on_drag_end(self, event: tk.Event) -> None:
+        self.drag_origin = None
+        self._save_state()
+
+    def refresh_async(self) -> None:
+        if self.refresh_inflight:
+            return
+        self.refresh_inflight = True
+        self.status_label.config(text="刷新中...")
+        worker = threading.Thread(target=self._refresh_worker, daemon=True)
+        worker.start()
+
+    def _refresh_worker(self) -> None:
+        try:
+            snapshot = self.cache.refresh()
+            self.window.after(0, lambda: self._apply_snapshot(snapshot))
+        except Exception as exc:
+            self.window.after(0, lambda: self._apply_error(str(exc)))
+
+    def _apply_error(self, message: str) -> None:
+        self.refresh_inflight = False
+        self.status_label.config(text=f"错误: {message}")
+        self._schedule_refresh()
+
+    def _apply_snapshot(
+        self,
+        snapshot: DashboardSnapshot,
+        throttle_result: Optional[SimulationResult] = None,
+        chart_throttle_results: Optional[Dict[Tuple[str, int], SimulationResult]] = None,
+    ) -> None:
+        self.refresh_inflight = False
+        self.latest_snapshot = snapshot
+        if self.throttle_mode == "auto":
+            self.latest_throttle_result = throttle_result
+            if chart_throttle_results is not None:
+                self.chart_throttle_results.update(chart_throttle_results)
+        else:
+            latest_key = self._latest_request_key(snapshot)
+            if latest_key != self.latest_throttle_key:
+                self.latest_throttle_result = None
+        self.status_label.config(text=f"已更新 {snapshot.generated_at.strftime('%H:%M:%S')}")
+
+        latest = snapshot.latest_request
+        previous = snapshot.previous_request
+        delta = latest.total_tokens - previous.total_tokens if latest and previous else None
+        delta_text = "较上一笔 -"
+        if delta is not None:
+            if delta > 0:
+                delta_text = f"较上一笔 +{fmt_k(delta)}"
+            elif delta < 0:
+                delta_text = f"较上一笔 {fmt_k(delta)}"
+            else:
+                delta_text = "较上一笔 0"
+
+        self._set_metric(
+            self.latest_metric,
+            fmt_int(latest.total_tokens if latest else None),
+            delta_text,
+            color=METRIC_PINK,
+        )
+
+        current_turn_count = len(snapshot.current_turn_requests)
+        self._set_metric(
+            self.today_metric,
+            fmt_int(snapshot.current_turn_total),
+            f"本轮 {fmt_k(snapshot.current_turn_total)} / {current_turn_count} 次往返",
+            color=METRIC_BLUE,
+        )
+
+        session_count = len({item.thread_id for item in snapshot.all_requests})
+        self._set_metric(
+            self.all_metric,
+            fmt_cn_compact(snapshot.all_total),
+            f"{session_count} 个会话",
+            color=METRIC_YELLOW,
+        )
+
+        if latest:
+            latest_time = latest.timestamp.strftime("%H:%M:%S") if latest.timestamp else "-"
+            self.breakdown_label.config(
+                text=(
+                    f"最新 {latest_time}"
+                    f"  |  上行 {fmt_k(latest.upstream_tokens)}"
+                    f"  |  下行 {fmt_k(latest.downstream_tokens)}"
+                    f"  |  缓存 {fmt_k(latest.cached_input_tokens)}"
+                    f"  |  总量 {fmt_k(latest.total_tokens)}"
+                )
+            )
+        else:
+            self.breakdown_label.config(text="暂时还没有请求数据。")
+
+        self._render_color_legend()
+        self._update_footer_labels(snapshot)
+
+        self._render_chart(snapshot)
+        self._schedule_refresh()
+
+    def _schedule_refresh(self) -> None:
+        if self.after_id is not None:
+            self.window.after_cancel(self.after_id)
+        self.after_id = self.window.after(self.refresh_ms, self.refresh_async)
+
+    def _chart_key(self, item: RequestPoint) -> str:
+        return f"{item.thread_id}:{item.turn_id}:{item.call_index}"
+
+    def _chart_items(self, snapshot: DashboardSnapshot) -> List[RequestPoint]:
+        source = snapshot.all_requests or snapshot.today_requests
+        if not source:
+            return []
+        if len(snapshot.current_turn_requests) >= BAR_LIMIT:
+            return snapshot.current_turn_requests[-BAR_LIMIT:]
+        return source[-BAR_LIMIT:]
+
+    def _visible_chart_items(self, snapshot: DashboardSnapshot) -> List[RequestPoint]:
+        items = self._chart_items(snapshot)
+        if len(items) <= VISIBLE_BAR_SLOTS:
+            return items
+        return items[-VISIBLE_BAR_SLOTS:]
+
+    def _turn_color_map(self, snapshot: DashboardSnapshot) -> Dict[str, Tuple[str, str]]:
+        source = snapshot.all_requests or snapshot.today_requests
+        turn_colors: Dict[str, Tuple[str, str]] = {}
+        if not source:
+            return turn_colors
+        for item in source:
+            if item.turn_id in turn_colors:
+                continue
+            turn_colors[item.turn_id] = TURN_PALETTE[len(turn_colors) % len(TURN_PALETTE)]
+        return turn_colors
+
+    def _turn_total_map(self, snapshot: DashboardSnapshot) -> Dict[str, int]:
+        source = snapshot.all_requests or snapshot.today_requests
+        totals: Dict[str, int] = defaultdict(int)
+        for item in source:
+            totals[item.turn_id] += item.total_tokens
+        if snapshot.current_turn_id:
+            totals[snapshot.current_turn_id] = snapshot.current_turn_total
+        return totals
+
+    def _render_chart(self, snapshot: DashboardSnapshot) -> None:
+        items = self._visible_chart_items(snapshot)
+        keys = tuple(self._chart_key(item) for item in items)
+        if self.chart_animation_after is not None:
+            self.window.after_cancel(self.chart_animation_after)
+            self.chart_animation_after = None
+
+        if self.last_chart_keys and keys != self.last_chart_keys:
+            self._animate_chart(snapshot, start_offset=26.0, frames=7)
+        else:
+            self._draw_chart(snapshot, row_offset=0.0)
+
+        self.last_chart_keys = keys
+
+    def _animate_chart(self, snapshot: DashboardSnapshot, start_offset: float, frames: int = 7) -> None:
+        state = {"frame": 0}
+
+        def step() -> None:
+            progress = state["frame"] / max(frames - 1, 1)
+            eased = (1.0 - progress) ** 2
+            self._draw_chart(snapshot, row_offset=start_offset * eased)
+            if state["frame"] >= frames - 1:
+                self.chart_animation_after = None
+                return
+            state["frame"] += 1
+            self.chart_animation_after = self.window.after(28, step)
+
+        step()
+
+    def _on_canvas_click(self, event: tk.Event) -> None:
+        for (x1, y1, x2, y2), item, direction in reversed(self.chart_regions):
+            if x1 <= event.x <= x2 and y1 <= event.y <= y2:
+                if direction == "up":
+                    self._open_upstream_detail(item)
+                else:
+                    self._open_downstream_detail(item)
+                return
+
+    def _estimate_upstream_breakdown(self, context_items: Sequence[object], input_tokens: int) -> List[Tuple[str, int, int]]:
+        category_weights: Dict[str, int] = defaultdict(int)
+        category_counts: Dict[str, int] = defaultdict(int)
+        for ctx in context_items:
+            label = self._category_label(ctx)
+            text = getattr(ctx, "text", "") or ""
+            weight = max(len(text), 1)
+            category_weights[label] += weight
+            category_counts[label] += 1
+
+        total_weight = sum(category_weights.values())
+        if total_weight <= 0:
+            return []
+
+        raw_allocations: List[Tuple[str, float]] = []
+        for label, weight in category_weights.items():
+            raw_allocations.append((label, input_tokens * weight / total_weight))
+
+        floored: Dict[str, int] = {label: int(value) for label, value in raw_allocations}
+        remain = input_tokens - sum(floored.values())
+        ranked = sorted(raw_allocations, key=lambda item: item[1] - int(item[1]), reverse=True)
+        for idx in range(remain):
+            floored[ranked[idx % len(ranked)][0]] += 1
+
+        rows = [(label, floored[label], category_counts[label]) for label in floored]
+        rows.sort(key=lambda item: item[1], reverse=True)
+        return rows
+
+    def _load_upstream_breakdown(self, item: RequestPoint) -> List[Tuple[str, int, int]]:
+        if item.upstream_breakdown:
+            return list(item.upstream_breakdown)
+        parsed = parse_session(item.session_file)
+        if item.call_index < 1 or item.call_index > len(parsed.calls):
+            return []
+        call = parsed.calls[item.call_index - 1]
+        context_items = parsed.transcript_pool[: call.context_end_index]
+        return self._estimate_upstream_breakdown(context_items, item.upstream_tokens)
+
+    def _downstream_label(self, out: object) -> str:
+        role = getattr(out, "role", "")
+        kind = getattr(out, "kind", "")
+        if kind == "reasoning":
+            return "推理输出"
+        if role == "assistant" and kind == "function_call":
+            return "历史工具调用"
+        if role == "assistant":
+            return "历史助手输出"
+        return "其他"
+
+    def _estimate_downstream_breakdown(
+        self,
+        output_items: Sequence[object],
+        output_tokens: int,
+        reasoning_output_tokens: int,
+    ) -> List[Tuple[str, int, int]]:
+        allocations: Dict[str, int] = defaultdict(int)
+        counts: Dict[str, int] = defaultdict(int)
+
+        if reasoning_output_tokens > 0:
+            allocations["推理输出"] += reasoning_output_tokens
+            counts["推理输出"] += sum(1 for out in output_items if getattr(out, "kind", "") == "reasoning")
+
+        weighted_items: List[Tuple[str, int]] = []
+        for out in output_items:
+            if getattr(out, "kind", "") == "reasoning":
+                continue
+            label = self._downstream_label(out)
+            text = getattr(out, "text", "") or ""
+            weight = max(len(text), 1)
+            weighted_items.append((label, weight))
+            counts[label] += 1
+
+        if output_tokens > 0:
+            total_weight = sum(weight for _label, weight in weighted_items)
+            if total_weight <= 0:
+                allocations["历史助手输出"] += output_tokens
+                counts["历史助手输出"] += 1
+            else:
+                raw_allocations = [
+                    (label, output_tokens * weight / total_weight)
+                    for label, weight in weighted_items
+                ]
+                floored: Dict[str, int] = defaultdict(int)
+                for label, value in raw_allocations:
+                    floored[label] += int(value)
+                remain = output_tokens - sum(floored.values())
+                ranked = sorted(raw_allocations, key=lambda item: item[1] - int(item[1]), reverse=True)
+                for idx in range(remain):
+                    floored[ranked[idx % len(ranked)][0]] += 1
+                for label, value in floored.items():
+                    allocations[label] += value
+
+        rows = [(label, allocations[label], counts[label]) for label in allocations]
+        rows.sort(key=lambda item: item[1], reverse=True)
+        return rows
+
+    def _load_downstream_breakdown(self, item: RequestPoint) -> List[Tuple[str, int, int]]:
+        if item.downstream_breakdown:
+            return list(item.downstream_breakdown)
+        parsed = parse_session(item.session_file)
+        if item.call_index < 1 or item.call_index > len(parsed.calls):
+            return []
+        call = parsed.calls[item.call_index - 1]
+        return self._estimate_downstream_breakdown(
+            call.output_items,
+            item.output_tokens,
+            item.reasoning_output_tokens,
+        )
+
+    def _context_bucket(self, ctx: object, is_latest_user: bool) -> str:
+        role = getattr(ctx, "role", "")
+        kind = getattr(ctx, "kind", "")
+        title = (getattr(ctx, "title", "") or "").lower()
+        kind_lower = (kind or "").lower()
+
+        if kind == "base_instructions" or role == "developer" or (role == "user" and is_latest_user):
+            return "prompt"
+        if kind == "turn_context":
+            return "planner"
+        if role == "tool" or (role == "assistant" and kind == "function_call"):
+            return "tool"
+        if "summary" in kind_lower or "summary" in title or "compact" in title or "compress" in title or "trunc" in title:
+            return "truncation"
+        return "memory"
+
+    def _estimate_upstream_attribution(
+        self,
+        context_items: Sequence[object],
+        input_tokens: int,
+        cached_input_tokens: int,
+    ) -> List[Tuple[str, str, int, float]]:
+        total_input = max(input_tokens, 0)
+        cached_tokens = max(0, min(cached_input_tokens, total_input))
+        uncached_tokens = max(total_input - cached_tokens, 0)
+        latest_user_index = None
+        for idx, ctx in enumerate(context_items):
+            if getattr(ctx, "role", "") == "user" and getattr(ctx, "kind", "") == "message":
+                latest_user_index = idx
+
+        weights: Dict[str, int] = defaultdict(int)
+        for idx, ctx in enumerate(context_items):
+            bucket = self._context_bucket(ctx, idx == latest_user_index)
+            text = getattr(ctx, "text", "") or ""
+            weights[bucket] += max(len(text), 1)
+
+        allocations: Dict[str, int] = {key: 0 for key, _label, _color in UPSTREAM_ATTR_SPECS}
+        allocations["cache"] = cached_tokens
+        weight_total = sum(weights.values())
+
+        if uncached_tokens > 0:
+            if weight_total <= 0:
+                allocations["prompt"] += uncached_tokens
+            else:
+                raw_allocations = [
+                    (key, uncached_tokens * weight / weight_total)
+                    for key, weight in weights.items()
+                ]
+                floored = {key: int(value) for key, value in raw_allocations}
+                remain = uncached_tokens - sum(floored.values())
+                ranked = sorted(raw_allocations, key=lambda item: item[1] - int(item[1]), reverse=True)
+                for idx in range(remain):
+                    floored[ranked[idx % len(ranked)][0]] += 1
+                for key, value in floored.items():
+                    allocations[key] += value
+
+        rows: List[Tuple[str, str, int, float]] = []
+        for key, label, _color in UPSTREAM_ATTR_SPECS:
+            tokens = allocations.get(key, 0)
+            pct = (tokens / total_input) if total_input > 0 else 0.0
+            rows.append((key, label, tokens, pct))
+        return rows
+
+    def _category_label(self, ctx: object) -> str:
+        role = getattr(ctx, "role", "")
+        kind = getattr(ctx, "kind", "")
+        title = getattr(ctx, "title", "")
+        if kind == "base_instructions":
+            return "系统提示"
+        if role == "developer":
+            return "开发者提示"
+        if role == "user":
+            return "用户消息"
+        if kind == "turn_context":
+            return "运行上下文"
+        if role == "tool":
+            return "工具输出"
+        if role == "assistant" and kind == "function_call":
+            return "历史工具调用"
+        if role == "assistant":
+            return "历史助手输出"
+        return title or kind or role or "其他"
+
+    def _compact_snippet(self, text: str, max_chars: int = 140) -> str:
+        merged = " ".join(line.strip() for line in text.splitlines() if line.strip())
+        if not merged:
+            return "(空)"
+        return shorten(merged, max_chars)
+
+    def _tool_name(self, item: object) -> str:
+        raw = getattr(item, "raw", {}) or {}
+        name = raw.get("name")
+        if name:
+            return str(name)
+        title = getattr(item, "title", "")
+        if ":" in title:
+            return title.split(":", 1)[1]
+        return title or "unknown"
+
+    def _build_compact_summary(self, session: SessionSnapshot, parsed) -> str:
+        items = parsed.transcript_pool
+        user_messages = [item for item in items if item.role == "user" and item.kind == "message"]
+        assistant_messages = [item for item in items if item.role == "assistant" and item.kind == "message"]
+        function_calls = [item for item in items if item.role == "assistant" and item.kind == "function_call"]
+        tool_outputs = [item for item in items if item.role == "tool"]
+        turn_ids = []
+        for req in session.requests:
+            if req.turn_id not in turn_ids:
+                turn_ids.append(req.turn_id)
+        latest_turn_id = session.requests[-1].turn_id if session.requests else None
+        latest_turn_requests = [req for req in session.requests if latest_turn_id and req.turn_id == latest_turn_id]
+        tool_counts: Dict[str, int] = defaultdict(int)
+        for call in function_calls:
+            tool_counts[self._tool_name(call)] += 1
+        top_tools = sorted(tool_counts.items(), key=lambda item: (-item[1], item[0]))[:8]
+
+        parts: List[str] = []
+        parts.append("【当前会话压缩摘要】")
+        parts.append("说明: 这是外部监控工具生成的压缩版摘要，不会直接改写 Codex 内部上下文。")
+        parts.append("")
+        parts.append("一、会话概况")
+        parts.append(f"- 标题: {session.title}")
+        parts.append(f"- thread_id: {session.thread_id}")
+        parts.append(f"- session_file: {session.session_file}")
+        parts.append(f"- 模型: {parsed.model or 'unknown'}")
+        parts.append(f"- 会话累计 token: {fmt_int(session.total_tokens)}")
+        parts.append(f"- 总往返: {len(session.requests)} 次")
+        parts.append(f"- 总轮次: {len(turn_ids)} 轮")
+        if latest_turn_requests:
+            parts.append(
+                f"- 当前轮次: {len(latest_turn_requests)} 次往返 / {fmt_k(sum(req.total_tokens for req in latest_turn_requests))}"
+            )
+        parts.append("")
+        parts.append("二、当前目标")
+        if user_messages:
+            parts.append(f"- 最近用户要求: {self._compact_snippet(user_messages[-1].text, 220)}")
+        else:
+            parts.append("- 最近用户要求: (未找到)")
+        parts.append("")
+        parts.append("三、最近用户消息")
+        if user_messages:
+            for idx, message in enumerate(user_messages[-6:], start=max(1, len(user_messages) - 5)):
+                parts.append(f"{idx}. {self._compact_snippet(message.text, 180)}")
+        else:
+            parts.append("- 无")
+        parts.append("")
+        parts.append("四、最近工具动作")
+        if top_tools:
+            for name, count in top_tools:
+                parts.append(f"- {name}: {count} 次")
+        else:
+            parts.append("- 本会话没有记录到工具调用")
+        if function_calls:
+            parts.append("- 最近调用顺序:")
+            for call in function_calls[-8:]:
+                parts.append(f"  {self._tool_name(call)}")
+        parts.append("")
+        parts.append("五、最近关键输出")
+        if assistant_messages:
+            for idx, message in enumerate(assistant_messages[-4:], start=1):
+                parts.append(f"- 助手{idx}: {self._compact_snippet(message.text, 220)}")
+        else:
+            parts.append("- 助手消息: 无")
+        if tool_outputs:
+            for idx, output in enumerate(tool_outputs[-4:], start=1):
+                parts.append(f"- 工具结果{idx}: {self._compact_snippet(output.text, 220)}")
+        parts.append("")
+        parts.append("六、继续对话可直接使用")
+        parts.append("请基于以上压缩摘要继续，不必重复历史背景；优先延续当前目标、已完成动作和最近工具结果。")
+        return "\n".join(parts)
+
+    def _load_upstream_attribution(self, item: RequestPoint) -> List[Tuple[str, str, int, float]]:
+        parsed = parse_session(item.session_file)
+        if item.call_index < 1 or item.call_index > len(parsed.calls):
+            return []
+        call = parsed.calls[item.call_index - 1]
+        context_items = parsed.transcript_pool[: call.context_end_index]
+        return self._estimate_upstream_attribution(context_items, item.upstream_tokens, item.cached_input_tokens)
+
+    def _render_color_legend(self) -> None:
+        for child in self.legend_frame.winfo_children():
+            child.destroy()
+
+    def _draw_breakdown_pie(
+        self,
+        canvas: tk.Canvas,
+        rows: Sequence[Tuple[str, int, int]],
+        center_x: float,
+        center_y: float,
+        radius: float,
+    ) -> None:
+        total = sum(tokens for _label, tokens, _count in rows if tokens > 0)
+        if total <= 0:
+            canvas.create_oval(
+                center_x - radius,
+                center_y - radius,
+                center_x + radius,
+                center_y + radius,
+                fill="#1f2937",
+                outline="#334155",
+                width=1,
+            )
+            canvas.create_text(center_x, center_y, text="无数据", fill="#94a3b8", font=self.tiny_font)
+            return
+
+        start = 0.0
+        for idx, (label, tokens, _count) in enumerate(rows):
+            if tokens <= 0:
+                continue
+            extent = 360.0 * tokens / total
+            color = BREAKDOWN_COLORS.get(label, PIE_FALLBACK_COLORS[idx % len(PIE_FALLBACK_COLORS)])
+            canvas.create_arc(
+                center_x - radius,
+                center_y - radius,
+                center_x + radius,
+                center_y + radius,
+                start=start,
+                extent=extent,
+                fill=color,
+                outline="#0f172a",
+                width=2,
+            )
+            start += extent
+
+        canvas.create_oval(
+            center_x - radius * 0.46,
+            center_y - radius * 0.46,
+            center_x + radius * 0.46,
+            center_y + radius * 0.46,
+            fill="#111827",
+            outline="#111827",
+        )
+        canvas.create_text(center_x, center_y - 8, text="总量", fill="#94a3b8", font=self.tiny_font)
+        canvas.create_text(center_x, center_y + 10, text=fmt_k(total), fill="#f8fafc", font=self.small_font)
+
+    def _build_breakdown_rows_text(self, rows: Sequence[Tuple[str, int, int]]) -> str:
+        lines: List[str] = []
+        total = sum(tokens for _label, tokens, _count in rows if tokens > 0)
+        for idx, (label, tokens, count) in enumerate(rows, start=1):
+            pct = (tokens / total * 100.0) if total > 0 else 0.0
+            lines.append(f"{idx}. {label}: {fmt_k(tokens)}  /  {pct:.1f}%  /  {count} 项")
+        return "\n".join(lines) if lines else "暂无分类数据"
+
+    def _attach_detail_chart(
+        self,
+        parent: tk.Widget,
+        rows: Sequence[Tuple[str, int, int]],
+        title: str,
+    ) -> None:
+        card = tk.Frame(parent, bg=DETAIL_BG)
+        card.pack(fill="x", padx=12, pady=(0, 10))
+
+        canvas = tk.Canvas(card, width=320, height=220, bg=DETAIL_BG, highlightthickness=0)
+        canvas.pack(side="left", padx=(0, 16))
+        canvas.create_text(160, 18, text=title, fill=DETAIL_ACCENT_BLUE, font=self.small_font)
+        self._draw_breakdown_pie(canvas, rows, 110, 116, 72)
+
+        legend = tk.Label(
+            card,
+            text=self._build_breakdown_rows_text(rows),
+            fg="#cbd5e1",
+            bg=DETAIL_BG,
+            justify="left",
+            anchor="nw",
+            font=self.tiny_font,
+        )
+        legend.pack(side="left", fill="both", expand=True)
+
+    def _copy_text(self, text: str, success_message: str = "已复制到剪贴板") -> None:
+        self.window.clipboard_clear()
+        self.window.clipboard_append(text)
+        self.window.update()
+        self.status_label.config(text=success_message)
+
+    def _open_throttle_detail(self) -> None:
+        result = self.latest_throttle_result
+        if result is None:
+            messagebox.showinfo("节流预估", "当前还没有可用的节流模拟结果。")
+            return
+
+        detail_window = self._create_detail_window(
+            title="节流预估详情",
+            geometry="980x760+180+140",
+            header_text=(
+                f"阈值 {self.throttle_threshold_k:.0f}K"
+                f"  |  压缩前 {fmt_k(result.input_tokens)}"
+                f"  |  压缩后 {fmt_k(result.estimated_compacted_input_tokens)}"
+                f"  |  可省 {fmt_k(result.estimated_saved_tokens)}"
+                f"  |  节省 {result.estimated_saved_ratio * 100:.1f}%"
+            ),
+            subheader_text="这是基于本地 session 的 Phase 1 节流模拟，不会直接修改 Codex 当前请求。",
+            subheader_fg=DETAIL_ACCENT_BLUE,
+        )
+
+        text = self._create_detail_text(detail_window)
+        parts: List[str] = []
+        parts.append(f"session_file: {result.session_file}")
+        parts.append(f"thread_id: {result.thread_id}")
+        parts.append(f"call_index: {result.call_index}")
+        parts.append(f"pressure_before: {result.pressure_before}")
+        parts.append(f"pressure_after: {result.pressure_after}")
+        parts.append("")
+        parts.append("### 压缩前分类")
+        for category, tokens in result.before_category_tokens:
+            parts.append(f"- {category}: {fmt_k(tokens)}")
+        parts.append("")
+        parts.append("### 压缩后分类")
+        for category, tokens in result.after_category_tokens:
+            parts.append(f"- {category}: {fmt_k(tokens)}")
+        parts.append("")
+        parts.append("### 保留策略")
+        for mode, count, chars in result.retention_summary:
+            parts.append(f"- {mode}: {count} 项 / {chars} chars")
+        parts.append("")
+        parts.append("### 最大工具输出")
+        for title, chars in result.top_tool_outputs:
+            parts.append(f"- {title}: {chars} chars")
+        parts.append("")
+        parts.append("### Working Memory Preview")
+        parts.append(f"- current_goal: {result.working_memory.current_goal or '-'}")
+        parts.append(f"- key_files: {', '.join(result.working_memory.key_files) if result.working_memory.key_files else '-'}")
+        parts.append(f"- key_findings: {' | '.join(result.working_memory.key_findings) if result.working_memory.key_findings else '-'}")
+        parts.append(f"- next_step: {result.working_memory.next_step or '-'}")
+        text.insert("1.0", "\n".join(parts))
+        text.configure(state="disabled")
+
+    def _open_compact_current_session(self) -> None:
+        snapshot = self.latest_snapshot
+        if not snapshot or not snapshot.latest_session:
+            messagebox.showinfo("暂无会话", "当前还没有可压缩的会话数据。")
+            return
+
+        parsed = parse_session(snapshot.latest_session.session_file)
+        summary_text = self._build_compact_summary(snapshot.latest_session, parsed)
+
+        detail_window = self._create_detail_window(
+            title="当前会话压缩摘要",
+            geometry="980x760+160+120",
+            header_text="这个摘要适合复制到当前会话或新会话里继续接力。它是外部压缩摘要，不会直接改变 Codex 内部上下文。",
+            subheader_text="你可以直接复制这段摘要继续接力，不需要再手动整理历史。",
+            subheader_fg=DETAIL_ACCENT_BLUE,
+        )
+
+        actions = tk.Frame(detail_window, bg=DETAIL_BG)
+        actions.pack(fill="x", padx=12, pady=(0, 8))
+        tk.Button(
+            actions,
+            text="复制摘要",
+            command=lambda: self._copy_text(summary_text, "已复制当前会话压缩摘要"),
+            bg="#16a34a",
+            fg="#ecfdf5",
+            activebackground="#22c55e",
+            activeforeground="#ecfdf5",
+            relief="flat",
+            padx=10,
+            pady=5,
+            font=self.tiny_font,
+            cursor="hand2",
+        ).pack(side="left", padx=(0, 8))
+        tk.Button(
+            actions,
+            text="关闭",
+            command=detail_window.destroy,
+            bg="#1f2937",
+            fg="#e5e7eb",
+            activebackground="#334155",
+            activeforeground="#f8fafc",
+            relief="flat",
+            padx=10,
+            pady=5,
+            font=self.tiny_font,
+            cursor="hand2",
+        ).pack(side="left")
+
+        text = self._create_detail_text(detail_window)
+        text.insert("1.0", summary_text)
+        text.configure(state="disabled")
+
+    def _open_upstream_detail(self, item: RequestPoint) -> None:
+        parsed = parse_session(item.session_file)
+        if item.call_index < 1 or item.call_index > len(parsed.calls):
+            return
+        call = parsed.calls[item.call_index - 1]
+        context_items = parsed.transcript_pool[: call.context_end_index]
+        breakdown = self._estimate_upstream_breakdown(context_items, item.upstream_tokens)
+        attribution = self._estimate_upstream_attribution(context_items, item.upstream_tokens, item.cached_input_tokens)
+
+        detail_window = self._create_detail_window(
+            title="请求上行详情",
+            geometry="980x760+120+120",
+            header_text=(
+                f"时间 {item.timestamp.strftime('%Y-%m-%d %H:%M:%S') if item.timestamp else '-'}"
+                f"  |  上行 {fmt_k(item.upstream_tokens)}"
+                f"  |  下行 {fmt_k(item.downstream_tokens)}"
+                f"  |  缓存 {fmt_k(item.cached_input_tokens)}"
+                f"  |  总量 {fmt_k(item.total_tokens)}"
+            ),
+            subheader_text="以下内容来自本地 Codex 会话落盘。总上行 token 是精确值；下面的分类拆分是按上下文长度估算分摊。",
+            subheader_fg="#93c5fd",
+        )
+
+        self._attach_detail_chart(detail_window, breakdown, "上行分类饼图")
+
+        text = self._create_detail_text(detail_window)
+
+        parts: List[str] = []
+        parts.append(f"session_file: {item.session_file}")
+        parts.append(f"thread_id: {item.thread_id}")
+        parts.append(f"turn_id: {item.turn_id}")
+        parts.append(f"call_index: {item.call_index}")
+        parts.append("")
+        parts.append("### 专业归因（估算；cache 精确）")
+        for _key, label, tokens, pct in attribution:
+            parts.append(f"- {label}: {fmt_k(tokens)}  /  {pct * 100:.1f}%")
+        parts.append("")
+        parts.append("### 上行分类汇总（估算）")
+        for label, tokens, count in breakdown:
+            parts.append(f"- {label}: {fmt_k(tokens)}  /  {count} 项")
+        parts.append("")
+
+        for idx, ctx in enumerate(context_items, start=1):
+            parts.append(f"### 上下文项 {idx}")
+            parts.append(f"role: {ctx.role}")
+            parts.append(f"kind: {ctx.kind}")
+            parts.append(f"title: {ctx.title}")
+            parts.append(f"category: {self._category_label(ctx)}")
+            parts.append("content:")
+            parts.append(ctx.text)
+            parts.append("")
+
+        text.insert("1.0", "\n".join(parts))
+        text.configure(state="disabled")
+
+    def _open_downstream_detail(self, item: RequestPoint) -> None:
+        parsed = parse_session(item.session_file)
+        if item.call_index < 1 or item.call_index > len(parsed.calls):
+            return
+        call = parsed.calls[item.call_index - 1]
+
+        detail_window = self._create_detail_window(
+            title="请求下行详情",
+            geometry="980x720+140+140",
+            header_text=(
+                f"时间 {item.timestamp.strftime('%Y-%m-%d %H:%M:%S') if item.timestamp else '-'}"
+                f"  |  下行 {fmt_k(item.downstream_tokens)}"
+                f"  |  output {fmt_k(item.output_tokens)}"
+                f"  |  reasoning {fmt_k(item.reasoning_output_tokens)}"
+            ),
+            subheader_text="这里展示的是这次请求返回后的本地记录，包括助手消息、工具调用等。",
+            subheader_fg=DETAIL_ACCENT_PINK,
+        )
+
+        breakdown = self._load_downstream_breakdown(item)
+        self._attach_detail_chart(detail_window, breakdown, "下行分类饼图")
+
+        text = self._create_detail_text(detail_window)
+
+        parts: List[str] = []
+        parts.append(f"session_file: {item.session_file}")
+        parts.append(f"thread_id: {item.thread_id}")
+        parts.append(f"turn_id: {item.turn_id}")
+        parts.append(f"call_index: {item.call_index}")
+        parts.append("")
+        for idx, out in enumerate(call.output_items, start=1):
+            parts.append(f"### 下行项 {idx}")
+            parts.append(f"role: {out.role}")
+            parts.append(f"kind: {out.kind}")
+            parts.append(f"title: {out.title}")
+            parts.append("content:")
+            parts.append(out.text)
+            parts.append("")
+
+        if not call.output_items:
+            parts.append("这次下行没有可展示的本地输出项。")
+
+        text.insert("1.0", "\n".join(parts))
+        text.configure(state="disabled")
+
+    def _draw_chart(self, snapshot: DashboardSnapshot, row_offset: float = 0.0) -> None:
+        canvas = self.canvas
+        canvas.delete("all")
+        self.chart_regions = []
+        viewport_width = max(canvas.winfo_width(), 900)
+        height = max(canvas.winfo_height(), 360)
+        left = 70
+        top = 42
+        bottom = height - 38
+
+        items = self._chart_items(snapshot)
+        visible_items = self._visible_chart_items(snapshot)
+        self.chart_hint.config(text="同色 = 同一轮")
+
+        if not visible_items:
+            canvas.create_text(
+                viewport_width / 2,
+                height / 2,
+                text="还没有 token 请求数据",
+                fill="#94a3b8",
+                font=self.small_font,
+            )
+            return
+
+        max_up = UPSTREAM_DISPLAY_CAP
+        max_down = DOWNSTREAM_DISPLAY_CAP
+        baseline = top + (bottom - top) * 0.52 + row_offset
+        up_band = baseline - top - 14
+        down_band = bottom - baseline - 32
+        visible_right = viewport_width - 28
+        visible_usable_width = visible_right - left
+        slot = visible_usable_width / max(len(visible_items), 1)
+        right = visible_right
+        bar_width = max(18, min(34, slot * 0.58))
+
+        turn_order: List[str] = []
+        for item in visible_items:
+            if item.turn_id not in turn_order:
+                turn_order.append(item.turn_id)
+        turn_colors = self._turn_color_map(snapshot)
+
+        for factor in (0.25, 0.5, 0.75, 1.0):
+            y_up = baseline - up_band * factor
+            canvas.create_line(left, y_up, right, y_up, fill=GRID_COLOR, width=1)
+        for factor in (0.5, 1.0):
+            y_down = baseline + down_band * factor
+            canvas.create_line(left, y_down, right, y_down, fill=GRID_COLOR, width=1)
+
+        canvas.create_line(left, baseline, right, baseline, fill="#7c8ba3", width=2)
+        canvas.create_text(left - 12, baseline - up_band, text=fmt_k_compact(max_up), fill=TEXT_MUTED, anchor="e", font=self.small_font)
+        canvas.create_text(left - 12, baseline, text="0", fill=TEXT_MUTED, anchor="e", font=self.small_font)
+        canvas.create_text(left - 12, baseline + down_band, text=fmt_k_compact(max_down), fill=TEXT_MUTED, anchor="e", font=self.small_font)
+        last_turn_id = None
+        for index, item in enumerate(visible_items):
+            x = left + slot * index + slot / 2
+            up_total_height = up_band * (clamp(item.upstream_tokens, max_up) / max_up)
+            down_total_height = down_band * (clamp(item.downstream_tokens, max_down) / max_down)
+            turn_up_color, turn_down_color = turn_colors[item.turn_id]
+
+            if last_turn_id is not None and item.turn_id != last_turn_id:
+                divider_x = x - slot / 2
+                canvas.create_line(divider_x, top - 6, divider_x, bottom + 4, fill="#475569", width=1, dash=(4, 4))
+            last_turn_id = item.turn_id
+
+            if item.upstream_tokens > 0:
+                canvas.create_rectangle(
+                    x - bar_width / 2,
+                    baseline - up_total_height,
+                    x + bar_width / 2,
+                    baseline,
+                    fill=turn_up_color,
+                    outline="",
+                )
+            if item.downstream_tokens > 0:
+                canvas.create_rectangle(
+                    x - bar_width / 2,
+                    baseline,
+                    x + bar_width / 2,
+                    baseline + down_total_height,
+                    fill=turn_down_color,
+                    outline="",
+                )
+
+            outline = "#ffffff" if item is snapshot.latest_request else "#334155"
+            outline_width = 2 if item is snapshot.latest_request else 0
+            if item.upstream_tokens > 0:
+                canvas.create_rectangle(
+                    x - bar_width / 2,
+                    baseline - up_total_height,
+                    x + bar_width / 2,
+                    baseline,
+                    outline=outline,
+                    width=outline_width,
+                )
+            if item.downstream_tokens > 0:
+                canvas.create_rectangle(
+                    x - bar_width / 2,
+                    baseline,
+                    x + bar_width / 2,
+                    baseline + down_total_height,
+                    outline=outline,
+                    width=outline_width,
+                )
+
+            self.chart_regions.append(
+                ((x - bar_width / 2, top - 6, x + bar_width / 2, baseline), item, "up")
+            )
+            self.chart_regions.append(
+                ((x - bar_width / 2, baseline, x + bar_width / 2, bottom + 8), item, "down")
+            )
+
+            canvas.create_text(
+                x,
+                max(top + 10, baseline - up_total_height - 12),
+                text=fmt_k_compact(item.upstream_tokens),
+                fill="#e2e8f0",
+                font=self.small_font,
+            )
+            canvas.create_text(
+                x,
+                min(bottom - 10, baseline + down_total_height + 12),
+                text=fmt_k_compact(item.downstream_tokens),
+                fill="#f8fafc",
+                font=self.small_font,
+            )
+
+        turn_totals = self._turn_total_map(snapshot)
+
+        legend_x = left + 4
+        legend_y = bottom + 6
+        legend_gap = 16
+        for index, turn_id in enumerate(turn_order):
+            turn_up_color, _turn_down_color = turn_colors[turn_id]
+            turn_tag = chr(ord("A") + index) if index < 26 else f"T{index + 1}"
+            label = f"{turn_tag} 本轮 {fmt_k_compact(turn_totals[turn_id])}"
+            label_width = self.tiny_font.measure(label) + legend_gap
+            if legend_x + label_width > right - 180:
+                legend_x = left + 4
+                legend_y += 14
+            canvas.create_text(legend_x, legend_y, text=label, fill=turn_up_color, font=self.tiny_font, anchor="w")
+            legend_x += label_width
+
+
+    def close(self) -> None:
+        if self.after_id is not None:
+            self.window.after_cancel(self.after_id)
+        if self.chart_animation_after is not None:
+            self.window.after_cancel(self.chart_animation_after)
+        self._save_state()
+        self.window.destroy()
+        self.root.destroy()
+
+    def run(self) -> None:
+        self.root.mainloop()
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Floating Codex token monitor widget.")
+    parser.add_argument("--codex-home", help="Path to Codex home. Defaults to $CODEX_HOME or ~/.codex")
+    parser.add_argument("--refresh-ms", type=int, default=REFRESH_MS, help="Refresh interval in milliseconds")
+    return parser
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    args = build_parser().parse_args(argv)
+    codex_home = detect_codex_home(args.codex_home)
+    widget = TokenMonitorWidget(codex_home=codex_home, refresh_ms=args.refresh_ms)
+    widget.run()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,92 +1,125 @@
-# codex-scope
+# Codex Context Inspector
 
+这个小工具直接读取本机 Codex 已经落盘的数据：
 
+- `~/.codex/sessions/**/*.jsonl`
+- `~/.codex/state_*.sqlite`
 
-## Getting started
+它能做两件事：
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+1. 看每一次模型调用之前，Codex 本地持久化下来的上下文内容。
+2. 统计精确 token。
+3. 用一个可拖拽的小悬浮窗监控最新请求、今日总量、全部总量和请求图表。
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+“精确”的来源不是本地估算，而是 Codex 会话文件里的 `event_msg.token_count.info`：
 
-## Add your files
+- 单次模型调用：取 `last_token_usage`
+- 整个 session：取最后一次 `total_token_usage.total_tokens`
+- 如果某个 session 还没来得及把最后值刷到 sqlite，就优先用 JSONL 里的最新值
 
-- [ ] [Create](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#create-a-file) or [upload](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#upload-a-file) files
-- [ ] [Add files using the command line](https://docs.gitlab.com/ee/gitlab-basics/add-file.html#add-a-file-using-the-command-line) or push an existing Git repository with the following command:
+## 快速开始
 
+```bash
+cd /Users/sean_1/codex/codex-tool
+python3 codex_context_inspector.py summary --latest
 ```
-cd existing_repo
-git remote add origin https://git.shangshi360.com/claw2026/codex-scope.git
-git branch -M master
-git push -uf origin master
+
+启动悬浮窗：
+
+```bash
+cd /Users/sean_1/codex/codex-tool
+python3 codex_token_widget.py
 ```
 
-## Integrate with your tools
+macOS 双击启动：
 
-- [ ] [Set up project integrations](https://git.shangshi360.com/claw2026/codex-scope/-/settings/integrations)
+在 Finder 里直接双击：
 
-## Collaborate with your team
+`/Users/sean_1/codex/codex-tool/启动 Codex Token 监控.command`
 
-- [ ] [Invite team members and collaborators](https://docs.gitlab.com/ee/user/project/members/)
-- [ ] [Create a new merge request](https://docs.gitlab.com/ee/user/project/merge_requests/creating_merge_requests.html)
-- [ ] [Automatically close issues from merge requests](https://docs.gitlab.com/ee/user/project/issues/managing_issues.html#closing-issues-automatically)
-- [ ] [Enable merge request approvals](https://docs.gitlab.com/ee/user/project/merge_requests/approvals/)
-- [ ] [Automatically merge when pipeline succeeds](https://docs.gitlab.com/ee/user/project/merge_requests/merge_when_pipeline_succeeds.html)
+## 常用命令
 
-## Test and Deploy
+列出最近 session：
 
-Use the built-in continuous integration in GitLab.
+```bash
+python3 codex_context_inspector.py sessions --limit 10
+```
 
-- [ ] [Get started with GitLab CI/CD](https://docs.gitlab.com/ee/ci/quick_start/index.html)
-- [ ] [Analyze your code for known vulnerabilities with Static Application Security Testing(SAST)](https://docs.gitlab.com/ee/user/application_security/sast/)
-- [ ] [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/ee/topics/autodevops/requirements.html)
-- [ ] [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/ee/user/clusters/agent/)
-- [ ] [Set up protected environments](https://docs.gitlab.com/ee/ci/environments/protected_environments.html)
+统计所有 session 的总 token：
 
-***
+```bash
+python3 codex_context_inspector.py totals --exact
+```
 
-# Editing this README
+查看某个 session 每次模型调用的 token 消耗：
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!).  Thank you to [makeareadme.com](https://www.makeareadme.com/) for this template.
+```bash
+python3 codex_context_inspector.py calls --latest
+```
 
-## Suggestions for a good README
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+查看第 1 次模型调用时，真正送进上下文的内容：
 
-## Name
-Choose a self-explaining name for your project.
+```bash
+python3 codex_context_inspector.py dump-context --latest --call 1 --max-chars 1000
+```
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
+导出 JSON：
 
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
+```bash
+python3 codex_context_inspector.py dump-context --latest --call 1 --json
+```
 
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
+指定某个 thread：
 
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
+```bash
+python3 codex_context_inspector.py summary --thread-id 019d8274-871d-7fa1-a0b0-d31316bce63c
+```
 
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
+调整悬浮窗刷新频率：
 
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
+```bash
+python3 codex_token_widget.py --refresh-ms 3000
+```
 
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
+模拟 Phase 1 上下文节流后的 token 节省：
 
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
+```bash
+python3 codex_context_throttler.py --latest
+```
 
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
+模拟某一次具体请求：
 
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
+```bash
+python3 codex_context_throttler.py --latest --call 3
+```
 
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
+导出节流模拟 JSON：
 
-## License
-For open source projects, say how it is licensed.
+```bash
+python3 codex_context_throttler.py --latest --json
+```
 
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+设置阈值，只有达到指定 `K` 才输出模拟结果：
+
+```bash
+python3 codex_context_throttler.py simulate --latest --threshold-k 120
+```
+
+自动轮询，达到阈值后自动运行：
+
+```bash
+python3 codex_context_throttler.py watch --threshold-k 120
+```
+
+调整自动轮询间隔：
+
+```bash
+python3 codex_context_throttler.py watch --threshold-k 120 --interval-sec 3
+```
+
+## 说明
+
+- 这个工具看到的是 Codex 本地持久化下来的上下文，不是抓包层的原始 websocket frame。
+- 对“我这一轮到底带了哪些提示词、开发者消息、用户消息、工具输出”这种问题，它已经够用了。
+- 如果你后面还想看网络层原始请求体，我可以再帮你补一个本地代理版。
+- 悬浮窗会记住上次拖拽后的窗口位置，状态文件在 `~/.codex/codex_token_widget.json`。
