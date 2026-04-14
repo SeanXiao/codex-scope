@@ -2,6 +2,10 @@
 
 Codex Scope is an unofficial local diagnostics toolkit for Codex sessions.
 
+Suggested GitHub repository description:
+
+`Local observability toolkit for Codex sessions with exact token accounting, context inspection, and continue cards.`
+
 It reads data already stored on your machine and helps you understand:
 
 - how many tokens each model call actually used
@@ -11,7 +15,7 @@ It reads data already stored on your machine and helps you understand:
 
 ![Codex Scope monitor dashboard](assets/monitor-dashboard.png)
 
-The screenshot above shows the floating monitor dashboard for recent token activity, daily totals, and cumulative usage.
+The screenshot above shows the English monitor dashboard with recent token activity, grouped turns, and a more detailed all-time total card.
 
 ## What It Reads
 
@@ -69,26 +73,30 @@ Launch the monitor widget:
 
 ```bash
 cd /Users/sean_1/codex/codex-tool
-/opt/homebrew/bin/python3.13 codex_token_widget.py
+bash scripts/launch_monitor.sh
 ```
 
 Launch the continue-card tool:
 
 ```bash
 cd /Users/sean_1/codex/codex-tool
-/opt/homebrew/bin/python3.13 codex_continue_summary.py
+bash scripts/launch_continue_summary.sh
 ```
 
 Launch with Chinese UI explicitly:
 
 ```bash
-/opt/homebrew/bin/python3.13 codex_token_widget.py --lang zh
+bash scripts/launch_monitor.sh --lang zh
 ```
 
 On macOS you can also launch:
 
 - `启动 Codex Token 监控.command`
-- `Codex Token 监控.app`
+
+On Windows you can use:
+
+- `scripts\launch_monitor.cmd`
+- `scripts\launch_continue_summary.cmd`
 
 ## Common Commands
 
@@ -125,8 +133,42 @@ python3 codex_context_inspector.py dump-context --latest --call 1 --json
 Print a continue card for the latest session:
 
 ```bash
-/opt/homebrew/bin/python3.13 codex_continue_summary.py --latest
+bash scripts/launch_continue_summary.sh --latest
 ```
+
+## Workbuddy Notes
+
+If Workbuddy fails to start the monitor with a Python error, the usual cause is a hardcoded interpreter path such as `/opt/homebrew/bin/python3.13`.
+
+Recommended fix:
+
+- use `bash scripts/launch_monitor.sh` instead of calling Python directly
+- or set `CODEX_SCOPE_PYTHON` to the interpreter you want Workbuddy to use
+
+Example:
+
+```bash
+export CODEX_SCOPE_PYTHON=/opt/homebrew/bin/python3.13
+bash scripts/launch_monitor.sh
+```
+
+The shell launcher prefers:
+
+- `CODEX_SCOPE_PYTHON`
+- `.venv/bin/python`
+- Homebrew Python
+- other non-system `python3`
+
+Note:
+
+- the existing `Codex Token 监控.app` bundle was exported earlier with a fixed Python path, so it may still fail on machines where that path does not exist
+- for GitHub distribution, the shell and Windows launchers are the safer default entry points
+
+## Platform Support
+
+- macOS: primary tested platform
+- Windows: launcher scripts are included; you need Python 3.11+ with Tk support
+- Linux: the shell launchers should work if Tkinter is available
 
 ## Privacy
 

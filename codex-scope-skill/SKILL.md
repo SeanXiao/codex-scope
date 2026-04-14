@@ -27,11 +27,11 @@ Do not use this skill for generic prompt engineering or remote service tracing. 
 From this skill directory:
 
 ```bash
-/opt/homebrew/bin/python3.13 scripts/codex_token_widget.py
+bash ../scripts/launch_monitor.sh
 ```
 
 ```bash
-/opt/homebrew/bin/python3.13 scripts/codex_continue_summary.py
+bash ../scripts/launch_continue_summary.sh
 ```
 
 ```bash
