@@ -18,7 +18,8 @@ Do not use this skill for generic prompt engineering or remote service tracing. 
 
 ## Quick routing
 
-- For a live visual dashboard: run `scripts/codex_token_widget.py`
+- Main entry point: use the monitor launcher first
+- For a live visual dashboard: run `bash ../scripts/launch_monitor.sh`
 - For a standalone continue-card window: run `scripts/codex_continue_summary.py`
 - For CLI inspection, totals, sessions, or context dumps: run `scripts/codex_context_inspector.py`
 

@@ -136,33 +136,52 @@ Print a continue card for the latest session:
 bash scripts/launch_continue_summary.sh --latest
 ```
 
-## Workbuddy Notes
+## Workbuddy Setup
 
-If Workbuddy fails to start the monitor with a Python error, the usual cause is a hardcoded interpreter path such as `/opt/homebrew/bin/python3.13`.
+If you want teammates to launch Codex Scope from Workbuddy, use the monitor as the main entry point.
 
-Recommended fix:
+Recommended Workbuddy configuration on macOS and Linux:
 
-- use `bash scripts/launch_monitor.sh` instead of calling Python directly
-- or set `CODEX_SCOPE_PYTHON` to the interpreter you want Workbuddy to use
+- Working directory: the repository root
+- Command: `bash scripts/launch_monitor.sh --lang en`
+
+Recommended Workbuddy configuration on Windows:
+
+- Working directory: the repository root
+- Command: `scripts\launch_monitor.cmd --lang en`
+
+If Python is installed in a non-standard location, set this environment variable in Workbuddy:
+
+```bash
+CODEX_SCOPE_PYTHON=/path/to/python
+```
 
 Example:
 
 ```bash
-export CODEX_SCOPE_PYTHON=/opt/homebrew/bin/python3.13
-bash scripts/launch_monitor.sh
+CODEX_SCOPE_PYTHON=/opt/homebrew/bin/python3.13
 ```
 
-The shell launcher prefers:
+Why this works:
+
+- Workbuddy does not need to know project internals
+- it only needs one stable main entry command
+- the launcher script auto-detects Python instead of relying on a hardcoded path
+
+Launcher priority order:
 
 - `CODEX_SCOPE_PYTHON`
 - `.venv/bin/python`
 - Homebrew Python
 - other non-system `python3`
+- fallback `python`
 
-Note:
+Troubleshooting:
 
-- the existing `Codex Token 监控.app` bundle was exported earlier with a fixed Python path, so it may still fail on machines where that path does not exist
-- for GitHub distribution, the shell and Windows launchers are the safer default entry points
+- If Workbuddy reports a Python startup failure, do not call `python3 codex_token_widget.py` directly.
+- Use the launcher script instead: `bash scripts/launch_monitor.sh --lang en`
+- The older `Codex Token 监控.app` bundle was exported earlier with a fixed interpreter path and may fail on other machines.
+- For GitHub distribution, the shell and Windows launchers are the recommended entry points.
 
 ## Platform Support
 
