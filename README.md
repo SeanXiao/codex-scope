@@ -1,118 +1,162 @@
-# codex-scope
+# Codex Scope
 
-`codex-scope` 是一个面向 Codex 会话诊断的本地工具集。
+Codex Scope is an unofficial local diagnostics toolkit for Codex sessions.
 
-它直接读取你机器上已经落盘的 Codex 数据：
+It reads data already stored on your machine and helps you understand:
+
+- how many tokens each model call actually used
+- what content was included in the effective context
+- how usage changes across recent turns
+- how to generate a compact "continue card" for starting a fresh session
+
+![Codex Scope monitor dashboard](assets/monitor-dashboard.png)
+
+The screenshot above shows the floating monitor dashboard for recent token activity, daily totals, and cumulative usage.
+
+## What It Reads
+
+Codex Scope works with local Codex data only:
 
 - `~/.codex/sessions/**/*.jsonl`
 - `~/.codex/state_*.sqlite`
 
-目标很明确：
+It does not rely on packet capture or proxying model traffic.
 
-- 看清每次模型往返到底消耗了多少 token
-- 看清当前会话真正送进模型的上下文内容
-- 用一个实时悬浮窗监控最近往返、轮次分组和总量变化
-- 生成可直接复制到新会话里的 AI 续聊卡
+## Features
 
-## 功能
+- Exact token accounting
+  Reads persisted `event_msg.token_count.info` usage records instead of estimating token counts locally.
 
-- 精确 token 统计  
-  读取 Codex 落盘的 `event_msg.token_count.info`，不是本地拍脑袋估算。
+- Context inspection
+  Reconstructs the context pool used before a model call so you can inspect what was actually sent.
 
-- 上下文回放  
-  可以查看某次模型调用前，实际进入上下文池的内容。
+- Floating monitor window
+  Provides a draggable always-on-top desktop widget for recent activity, grouped turns, and token trends.
 
-- 实时监控窗口  
-  可拖拽、置顶、中文界面，支持查看最近往返、按 `turn` 分组、点击柱子看上行/下行详情。
+- Continue card generation
+  Builds a compact machine-oriented summary you can paste into a new session to resume work faster.
 
-- AI 续聊卡  
-  面向新会话机器输入，保留当前轮重点、文件痕迹和此前 session 脉络。
+- Bilingual desktop UI
+  Lets you switch between English and Chinese, with English as the default language.
 
-## 目录
+## UI Preview
 
-- `codex_context_inspector.py`  
-  会话扫描、上下文导出、精确 token 汇总。
+- A floating desktop dashboard for recent token activity
+- Daily, previous-day, and cumulative usage totals
+- Grouped turn visibility for spotting spikes quickly
 
-- `codex_token_widget.py`  
-  悬浮监控窗口。
+## Project Layout
 
-- `codex_continue_summary.py`  
-  AI 续聊卡窗口与续聊卡构建逻辑。
+- `codex_context_inspector.py`
+  Session scanning, context export, and exact token summaries.
 
-## 快速开始
+- `codex_token_widget.py`
+  Floating desktop monitor window.
 
-查看最新会话摘要：
+- `codex_continue_summary.py`
+  Continue-card UI and summary generation logic.
+
+## Quick Start
+
+Show a summary for the latest session:
 
 ```bash
 cd /Users/sean_1/codex/codex-tool
 python3 codex_context_inspector.py summary --latest
 ```
 
-启动监控窗口：
+Launch the monitor widget:
 
 ```bash
 cd /Users/sean_1/codex/codex-tool
 /opt/homebrew/bin/python3.13 codex_token_widget.py
 ```
 
-启动续聊卡窗口：
+Launch the continue-card tool:
 
 ```bash
 cd /Users/sean_1/codex/codex-tool
 /opt/homebrew/bin/python3.13 codex_continue_summary.py
 ```
 
-macOS 双击启动：
+Launch with Chinese UI explicitly:
+
+```bash
+/opt/homebrew/bin/python3.13 codex_token_widget.py --lang zh
+```
+
+On macOS you can also launch:
 
 - `启动 Codex Token 监控.command`
 - `Codex Token 监控.app`
 
-## 常用命令
+## Common Commands
 
-列出最近会话：
+List recent sessions:
 
 ```bash
 python3 codex_context_inspector.py sessions --limit 10
 ```
 
-统计全部 session 的精确总 token：
+Show exact total token usage across all sessions:
 
 ```bash
 python3 codex_context_inspector.py totals --exact
 ```
 
-查看最新 session 的每次调用：
+Inspect calls from the latest session:
 
 ```bash
 python3 codex_context_inspector.py calls --latest
 ```
 
-导出某次调用前的上下文：
+Dump the reconstructed context before a specific call:
 
 ```bash
 python3 codex_context_inspector.py dump-context --latest --call 1 --max-chars 1000
 ```
 
-导出 JSON：
+Dump the same context as JSON:
 
 ```bash
 python3 codex_context_inspector.py dump-context --latest --call 1 --json
 ```
 
-打印最新会话的续聊卡：
+Print a continue card for the latest session:
 
 ```bash
 /opt/homebrew/bin/python3.13 codex_continue_summary.py --latest
 ```
 
-## 说明
+## Privacy
 
-- 这个项目分析的是 Codex 本地持久化数据，不是网络抓包层的原始 websocket frame。
-- 监控窗口展示的是“真实已发生的请求”。
-- 续聊卡是给新会话继续任务用的机器输入，不会直接改写当前 Codex 内部上下文。
-- 悬浮窗位置和一些状态会记录在 `~/.codex/codex_token_widget.json`。
+This project analyzes local Codex persistence data on your own machine.
+It does not require sending your session history to an external service.
 
-## 下一步方向
+## Notes
 
-- 继续打磨监控界面的可读性
-- 继续打磨 AI 续聊卡的压缩质量
+- The monitor shows real requests that already happened.
+- The continue card is intended for bootstrapping a new session, not rewriting the current internal context.
+- Widget position and related state are stored in `~/.codex/codex_token_widget.json`.
+
+## Naming Recommendation
+
+Recommended public GitHub repository name:
+
+`codex-scope`
+
+Recommended product title:
+
+`Codex Scope`
+
+Why this name works:
+
+- it matches the current codebase and artifacts
+- it is short and easy to remember
+- it communicates inspection, visibility, and diagnostics
+
+If you want a more neutral public-facing alternative, consider:
+
+- `scope-for-codex`
+- `codex-session-scope`
+- `codex-session-inspector`
