@@ -89,10 +89,6 @@ Launch with Chinese UI explicitly:
 bash scripts/launch_monitor.sh --lang zh
 ```
 
-On macOS you can also launch:
-
-- `启动 Codex Token 监控.command`
-
 On Windows you can use:
 
 - `scripts\launch_monitor.cmd`
@@ -180,7 +176,6 @@ Troubleshooting:
 
 - If Workbuddy reports a Python startup failure, do not call `python3 codex_token_widget.py` directly.
 - Use the launcher script instead: `bash scripts/launch_monitor.sh --lang en`
-- The older `Codex Token 监控.app` bundle was exported earlier with a fixed interpreter path and may fail on other machines.
 - For GitHub distribution, the shell and Windows launchers are the recommended entry points.
 
 ## Platform Support
