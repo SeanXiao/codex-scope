@@ -19,8 +19,8 @@ Do not use this skill for generic prompt engineering or remote service tracing. 
 ## Quick routing
 
 - Main entry point: use the monitor launcher first
-- For a live visual dashboard: run `bash ../scripts/launch_monitor.sh`
-- For a standalone continue-card window: run `scripts/codex_continue_summary.py`
+- For a live visual dashboard: run `bash scripts/launch_monitor.sh`
+- For a standalone continue-card window: run `bash scripts/launch_continue_summary.sh`
 - For CLI inspection, totals, sessions, or context dumps: run `scripts/codex_context_inspector.py`
 
 ## Commands
@@ -28,11 +28,11 @@ Do not use this skill for generic prompt engineering or remote service tracing. 
 From this skill directory:
 
 ```bash
-bash ../scripts/launch_monitor.sh
+bash scripts/launch_monitor.sh
 ```
 
 ```bash
-bash ../scripts/launch_continue_summary.sh
+bash scripts/launch_continue_summary.sh
 ```
 
 ```bash
@@ -56,6 +56,13 @@ python3 scripts/codex_context_inspector.py dump-context --latest --call 1 --max-
 1. If the user is debugging token growth or wants a persistent monitor, launch the floating monitor first.
 2. If the user wants to continue work in a fresh conversation, open the continue card and copy the generated machine input.
 3. If the user asks why a specific request was large, use the inspector CLI to dump the exact call context or list recent calls.
+
+## WorkBuddy rules
+
+- Treat this skill package as self-contained. Prefer the local launcher scripts under `scripts/`.
+- Do not tell the user the monitor needs "macOS 26". There is no such project requirement in this skill.
+- If the GUI cannot start, diagnose Python or Tk availability first.
+- If Tk is unavailable, fall back to `python3 scripts/codex_context_inspector.py` commands instead of inventing an OS-version blocker.
 
 ## Notes
 
