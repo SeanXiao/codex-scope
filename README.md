@@ -184,6 +184,12 @@ Troubleshooting:
 - Windows: launcher scripts are included; you need Python 3.11+ with Tk support
 - Linux: the shell launchers should work if Tkinter is available
 
+## Launch Copy
+
+For GitHub `About`, topics, and public launch copy, see:
+
+- `docs/github-launch-kit.md`
+
 ## Privacy
 
 This project analyzes local Codex persistence data on your own machine.
