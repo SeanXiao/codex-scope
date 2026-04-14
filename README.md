@@ -222,3 +222,25 @@ If you want a more neutral public-facing alternative, consider:
 - `scope-for-codex`
 - `codex-session-scope`
 - `codex-session-inspector`
+
+## 中文说明
+
+`Codex Scope` 是一个面向 Codex 会话的本地可观测性工具。
+
+它主要解决这几类问题：
+
+- 精确查看每次请求实际消耗了多少 token
+- 回放某次模型调用前，真实进入上下文的内容
+- 用桌面监控窗口观察最近请求、轮次分组和累计总量
+- 生成可复制到新会话中的 continue card，便于续接长任务
+
+主入口：
+
+- macOS / Linux: `bash scripts/launch_monitor.sh --lang en`
+- Windows: `scripts\launch_monitor.cmd --lang en`
+
+特点：
+
+- 默认英文界面，可切换中文
+- 基于本地 Codex 持久化数据，不依赖抓包
+- MIT 协议开源，可自由使用、修改和分发
