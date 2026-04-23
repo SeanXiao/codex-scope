@@ -411,7 +411,7 @@ def command_sessions(args: argparse.Namespace) -> int:
         print(f"  model: {record.model or 'unknown'}")
         print(f"  tokens: {exact_tokens}")
         print(f"  cwd: {record.cwd}")
-        print(f"  title: {shorten(record.title.strip(), 120)}")
+        print(f"  title: {shorten(normalize_text(record.title).strip(), 120)}")
         print(f"  session_file: {record.rollout_path or 'missing'}")
         print()
     return 0
@@ -445,7 +445,7 @@ def command_summary(args: argparse.Namespace) -> int:
     print(f"exact_total_tokens: {exact_total if exact_total is not None else 'unknown'}")
     if db_record:
         print(f"state_db_tokens_used: {db_record.tokens_used}")
-        print(f"title: {db_record.title.strip()}")
+        print(f"title: {normalize_text(db_record.title).strip()}")
         print(f"cwd: {db_record.cwd}")
     if parsed.calls:
         last = parsed.calls[-1]

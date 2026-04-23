@@ -774,6 +774,7 @@ class TokenMonitorWidget:
         text: str,
         command,
         kind: str = "secondary",
+        text_color: Optional[str] = None,
     ) -> tk.Label:
         if kind == "primary":
             bg = DETAIL_TEXT_BG
@@ -787,6 +788,7 @@ class TokenMonitorWidget:
             hover_bg = "#18243c"
             hover_fg = "#f8fafc"
             border = "#31415f"
+        fg = text_color or fg
         button = tk.Label(
             parent,
             text=text,
@@ -834,6 +836,39 @@ class TokenMonitorWidget:
         notebook = ttk.Notebook(parent, style="CodexScope.TNotebook")
         notebook.pack(fill="both", expand=True, padx=12, pady=(0, 12))
         return notebook
+
+    def _create_scrollable_detail_frame(self, parent: tk.Widget) -> tk.Frame:
+        shell = tk.Frame(parent, bg=DETAIL_BG)
+        shell.pack(fill="both", expand=True)
+
+        canvas = tk.Canvas(shell, bg=DETAIL_BG, highlightthickness=0)
+        scrollbar = tk.Scrollbar(shell, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        content = tk.Frame(canvas, bg=DETAIL_BG)
+        window_id = canvas.create_window((0, 0), window=content, anchor="nw")
+
+        def sync_scrollregion(_event=None) -> None:
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def sync_width(event) -> None:
+            canvas.itemconfigure(window_id, width=event.width)
+
+        def on_mousewheel(event) -> str | None:
+            delta = event.delta
+            if delta == 0:
+                return None
+            canvas.yview_scroll(int(-delta / 120), "units")
+            return "break"
+
+        content.bind("<Configure>", sync_scrollregion)
+        canvas.bind("<Configure>", sync_width)
+        canvas.bind("<MouseWheel>", on_mousewheel)
+        content.bind("<MouseWheel>", on_mousewheel)
+        return content
 
     def _create_tagged_detail_text(self, parent: tk.Widget) -> scrolledtext.ScrolledText:
         text = self._create_detail_text(parent)
@@ -1504,6 +1539,7 @@ class TokenMonitorWidget:
         row = tk.Frame(self.legend_frame, bg=SURFACE_BG)
         row.pack(fill="x")
         turn_totals = self._turn_total_map(snapshot)
+        turn_colors = self._turn_color_map(snapshot)
         for index, turn_id in enumerate(turn_order):
             turn_tag = chr(ord("A") + index) if index < 26 else f"T{index + 1}"
             total_tokens = turn_totals[turn_id]
@@ -1512,11 +1548,13 @@ class TokenMonitorWidget:
                 if self.lang == "en"
                 else f"{turn_tag} 本轮 {fmt_k_compact(total_tokens)}"
             )
+            turn_up_color, _turn_down_color = turn_colors.get(turn_id, TURN_PALETTE[index % len(TURN_PALETTE)])
             button = self._make_detail_action_button(
                 row,
                 text=label,
                 command=lambda turn_id=turn_id: self._open_turn_detail(turn_id),
                 kind="secondary",
+                text_color=turn_up_color,
             )
             button.pack(side="left", padx=(0, 8), pady=(0, 2))
 
@@ -1736,9 +1774,10 @@ class TokenMonitorWidget:
         notebook.add(categories_tab, text="Categories" if self.lang == "en" else "分类")
         notebook.add(all_items_tab, text="All Items" if self.lang == "en" else "全部明细")
 
-        self._attach_detail_chart(overview_tab, breakdown, self._t("detail.upstream.pie_title"))
+        overview_content = self._create_scrollable_detail_frame(overview_tab)
+        self._attach_detail_chart(overview_content, breakdown, self._t("detail.upstream.pie_title"))
         self._build_breakdown_summary_panel(
-            overview_tab,
+            overview_content,
             [(label, tokens, count) for label, tokens, count in breakdown],
             title=self._t("detail.breakdown.title"),
             total_tokens=max(item.upstream_tokens, 1),
@@ -1813,9 +1852,10 @@ class TokenMonitorWidget:
         notebook.add(categories_tab, text="Categories" if self.lang == "en" else "分类")
         notebook.add(all_items_tab, text="All Outputs" if self.lang == "en" else "全部输出")
 
-        self._attach_detail_chart(overview_tab, breakdown, self._t("detail.downstream.pie_title"))
+        overview_content = self._create_scrollable_detail_frame(overview_tab)
+        self._attach_detail_chart(overview_content, breakdown, self._t("detail.downstream.pie_title"))
         self._build_breakdown_summary_panel(
-            overview_tab,
+            overview_content,
             [(label, tokens, count) for label, tokens, count in breakdown],
             title=self._t("detail.downstream.pie_title"),
             total_tokens=max(item.downstream_tokens, 1),
@@ -1975,38 +2015,6 @@ class TokenMonitorWidget:
                 fill="#f8fafc",
                 font=self.small_font,
             )
-
-        turn_totals = self._turn_total_map(snapshot)
-
-        legend_x = left + 4
-        legend_y = bottom + 6
-        legend_gap = 12
-        legend_labels_default = []
-        legend_labels_compact = []
-        for index, turn_id in enumerate(turn_order):
-            turn_tag = chr(ord("A") + index) if index < 26 else f"T{index + 1}"
-            total_tokens = turn_totals[turn_id]
-            legend_labels_default.append((turn_id, self._t("monitor.turn_legend", tag=turn_tag, tokens=fmt_k_compact(total_tokens))))
-            legend_labels_compact.append((turn_id, f"{turn_tag} {fmt_eng_unit_compact(total_tokens)}"))
-
-        available_width = right - (left + 4)
-        default_width = sum(self.tiny_font.measure(label) + legend_gap for _turn_id, label in legend_labels_default)
-        compact_width = sum(self.tiny_font.measure(label) + legend_gap for _turn_id, label in legend_labels_compact)
-        legend_labels = legend_labels_compact if compact_width <= available_width or compact_width < default_width else legend_labels_default
-
-        for index, turn_id in enumerate(turn_order):
-            turn_up_color, _turn_down_color = turn_colors[turn_id]
-            label = legend_labels[index][1]
-            label_width = self.tiny_font.measure(label) + legend_gap
-            if legend_x + label_width > right - 180:
-                legend_x = left + 4
-                legend_y += 14
-            canvas.create_text(legend_x, legend_y, text=label, fill=turn_up_color, font=self.tiny_font, anchor="w")
-            self.turn_label_regions.append(
-                ((legend_x, legend_y - 8, legend_x + label_width - legend_gap / 2, legend_y + 8), turn_id)
-            )
-            legend_x += label_width
-
 
     def close(self) -> None:
         if self.after_id is not None:
