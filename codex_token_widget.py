@@ -14,7 +14,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import platform
+import plistlib
+import sys
 import threading
 from collections import defaultdict
 from dataclasses import dataclass
@@ -96,6 +99,35 @@ PIE_FALLBACK_COLORS: List[str] = [
     "#f43f5e",
     "#94a3b8",
 ]
+DEFAULT_APP_VERSION = "26.4.23.1"
+
+
+def detect_app_version() -> str:
+    override = os.environ.get("CODEX_SCOPE_VERSION", "").strip()
+    if override:
+        return override
+    executable_path = Path(sys.executable).resolve()
+    info_plist = executable_path.parents[1] / "Info.plist" if len(executable_path.parents) >= 2 else None
+    if info_plist and info_plist.exists():
+        try:
+            with info_plist.open("rb") as handle:
+                metadata = plistlib.load(handle)
+            bundle_version = ensure_text(
+                metadata.get("CFBundleShortVersionString") or metadata.get("CFBundleVersion")
+            ).strip()
+            if bundle_version:
+                return bundle_version
+        except Exception:
+            pass
+    version_path = Path(__file__).with_name("VERSION")
+    if version_path.exists():
+        version_text = version_path.read_text(encoding="utf-8").strip()
+        if version_text:
+            return version_text
+    return DEFAULT_APP_VERSION
+
+
+APP_VERSION = detect_app_version()
 
 
 def parse_iso_utc(text: Optional[str]) -> Optional[datetime]:
@@ -606,7 +638,7 @@ class TokenMonitorWidget:
         self.root.withdraw()
         self.window = tk.Toplevel(self.root)
         self.window.overrideredirect(self.use_borderless)
-        self.window.title(self._t("monitor.window_title"))
+        self.window.title(self._window_title())
         self.window.configure(bg=WINDOW_BG)
 
         self.state = self._load_state()
@@ -640,6 +672,9 @@ class TokenMonitorWidget:
     def _label(self, key: str) -> str:
         return ensure_text(get_label(key, self.lang))
 
+    def _window_title(self) -> str:
+        return f"{self._t('monitor.window_title')} {APP_VERSION}"
+
     def _load_state(self) -> Dict[str, object]:
         if WIDGET_STATE_PATH.exists():
             try:
@@ -665,7 +700,7 @@ class TokenMonitorWidget:
             self.status_label.config(text=self._t("monitor.status.loading"))
 
     def _apply_language(self) -> None:
-        self.window.title(self._t("monitor.window_title"))
+        self.window.title(self._window_title())
         self.title_label.config(text=self._t("monitor.window_title"))
         self.lang_button.config(text=self._t("language.toggle"))
         if self.latest_snapshot is None:

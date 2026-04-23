@@ -168,7 +168,21 @@ class TurnDialogue:
     assistant_messages: List[str]
 
 
-def compact(text: str, max_chars: int = 220) -> str:
+def ensure_text(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (list, tuple, set)):
+        return " / ".join(part for part in (ensure_text(item).strip() for item in value) if part)
+    if isinstance(value, dict):
+        return " / ".join(
+            part for part in (f"{key}: {ensure_text(item).strip()}" for key, item in value.items()) if part.strip()
+        )
+    return str(value)
+
+
+def compact(text: object, max_chars: int = 220) -> str:
     merged = " ".join(line.strip() for line in sanitize_text(text).splitlines() if line.strip())
     if len(merged) <= max_chars:
         return merged
@@ -186,8 +200,8 @@ def fmt_eng(value: float | int) -> str:
     return f"{sign}{int(abs_value)}"
 
 
-def sanitize_text(text: str) -> str:
-    cleaned = text or ""
+def sanitize_text(text: object) -> str:
+    cleaned = ensure_text(text)
     cleaned = CITATION_RE.sub("", cleaned)
     cleaned = BROKEN_CITATION_RE.sub("", cleaned)
     cleaned = INLINE_CODE_RE.sub(r"\1", cleaned)
@@ -197,8 +211,8 @@ def sanitize_text(text: str) -> str:
     return cleaned.strip()
 
 
-def strip_summary_blob(text: str) -> str:
-    cleaned = text or ""
+def strip_summary_blob(text: object) -> str:
+    cleaned = ensure_text(text)
     cut_positions = [cleaned.find(marker) for marker in SUMMARY_BLOB_MARKERS if marker in cleaned]
     if cut_positions:
         cleaned = cleaned[: min(cut_positions)]
@@ -520,9 +534,9 @@ def build_turn_dialogues(parsed) -> List[TurnDialogue]:
         turn_id = call.turn_id or "unknown"
         context_delta = parsed.transcript_pool[cursor:call.context_end_index]
         new_user_messages = [
-            item.text
+            ensure_text(item.text)
             for item in context_delta
-            if item.role == "user" and item.kind == "message" and (item.text or "").strip()
+            if item.role == "user" and item.kind == "message" and ensure_text(item.text).strip()
         ]
 
         if current_turn_id is None:
@@ -562,12 +576,14 @@ def build_turn_dialogues(parsed) -> List[TurnDialogue]:
         )
         current_total_tokens += int(usage.get("total_tokens") or 0)
         for item in context_delta:
-            if item.role in {"tool", "assistant"} and (item.text or "").strip():
-                current_file_texts.append(item.text)
+            safe_text = ensure_text(item.text)
+            if item.role in {"tool", "assistant"} and safe_text.strip():
+                current_file_texts.append(safe_text)
         for item in call.output_items:
-            if item.role == "assistant" and item.kind == "message" and (item.text or "").strip():
-                current_assistant.append(item.text)
-                current_file_texts.append(item.text)
+            safe_text = ensure_text(item.text)
+            if item.role == "assistant" and item.kind == "message" and safe_text.strip():
+                current_assistant.append(safe_text)
+                current_file_texts.append(safe_text)
 
         cursor = call.context_end_index + sum(1 for item in call.output_items if item.transcriptable)
 

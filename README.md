@@ -13,7 +13,7 @@ Author:
 ## Download
 
 - Latest macOS app: [GitHub Releases](https://github.com/SeanXiao/codex-scope/releases/latest)
-- Release artifact name: `Codex-Scope-macOS.zip`
+- Release artifact name: `Codex-Scope-macOS.dmg`
 
 It reads data already stored on your machine and helps you understand:
 

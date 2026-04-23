@@ -9,8 +9,11 @@ VENV_DIR="$ROOT_DIR/.venv"
 ICON_SRC="$ROOT_DIR/assets/app-icon.png"
 ICNS_PATH="$ROOT_DIR/assets/CodexScope.icns"
 APP_NAME="Codex Scope"
+APP_VERSION="${CODEX_SCOPE_VERSION:-26.4.23.1}"
 APP_PATH="$ROOT_DIR/dist/$APP_NAME.app"
-ZIP_PATH="$ROOT_DIR/dist/Codex-Scope-macOS.zip"
+DMG_PATH="$ROOT_DIR/dist/Codex-Scope-macOS.dmg"
+DMG_STAGE_DIR="$ROOT_DIR/build/dmg"
+DMG_VOLUME_NAME="Codex Scope Installer"
 
 if [[ ! -x "$PYTHON_BIN" ]]; then
   echo "Python runtime not found: $PYTHON_BIN" >&2
@@ -58,6 +61,10 @@ PYINSTALLER_CONFIG_DIR=/tmp/pyinstaller "$VENV_DIR/bin/pyinstaller" \
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.xiaobin.codexscope" "$APP_PATH/Contents/Info.plist" >/dev/null
 /usr/libexec/PlistBuddy -c "Set :CFBundleName $APP_NAME" "$APP_PATH/Contents/Info.plist" >/dev/null
 /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName $APP_NAME" "$APP_PATH/Contents/Info.plist" >/dev/null
+/usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string $APP_VERSION" "$APP_PATH/Contents/Info.plist" 2>/dev/null || \
+  /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $APP_VERSION" "$APP_PATH/Contents/Info.plist" >/dev/null
+/usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $APP_VERSION" "$APP_PATH/Contents/Info.plist" 2>/dev/null || \
+  /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $APP_VERSION" "$APP_PATH/Contents/Info.plist" >/dev/null
 /usr/libexec/PlistBuddy -c "Add :CodexScopeAuthor string xiaobin" "$APP_PATH/Contents/Info.plist" 2>/dev/null || \
   /usr/libexec/PlistBuddy -c "Set :CodexScopeAuthor xiaobin" "$APP_PATH/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :CodexScopeContact string happyyou2009@gmail.com" "$APP_PATH/Contents/Info.plist" 2>/dev/null || \
@@ -65,8 +72,18 @@ PYINSTALLER_CONFIG_DIR=/tmp/pyinstaller "$VENV_DIR/bin/pyinstaller" \
 /usr/libexec/PlistBuddy -c "Add :NSHumanReadableCopyright string xiaobin · happyyou2009@gmail.com" "$APP_PATH/Contents/Info.plist" 2>/dev/null || \
   /usr/libexec/PlistBuddy -c "Set :NSHumanReadableCopyright xiaobin · happyyou2009@gmail.com" "$APP_PATH/Contents/Info.plist"
 
-rm -f "$ZIP_PATH"
-ditto -c -k --keepParent "$APP_PATH" "$ZIP_PATH"
+rm -rf "$DMG_STAGE_DIR" "$DMG_PATH"
+mkdir -p "$DMG_STAGE_DIR"
+cp -R "$APP_PATH" "$DMG_STAGE_DIR/"
+ln -s /Applications "$DMG_STAGE_DIR/Applications"
+
+hdiutil create \
+  -volname "$DMG_VOLUME_NAME" \
+  -srcfolder "$DMG_STAGE_DIR" \
+  -ov \
+  -format UDZO \
+  "$DMG_PATH" >/dev/null
 
 echo "Built app: $APP_PATH"
-echo "Release zip: $ZIP_PATH"
+echo "App version: $APP_VERSION"
+echo "Release dmg: $DMG_PATH"
