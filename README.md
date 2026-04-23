@@ -16,6 +16,7 @@ Author:
 - Latest Windows app: [GitHub Releases](https://github.com/SeanXiao/codex-scope/releases/latest)
 - Release artifact name: `Codex-Scope-macOS.dmg`
 - Release artifact names: `Codex-Scope.exe`, `Codex-Scope-windows.zip`
+- Signed macOS release pipeline setup: [`docs/macos-release.md`](docs/macos-release.md)
 
 It reads data already stored on your machine and helps you understand:
 
@@ -184,6 +185,7 @@ bash scripts/launch_continue_summary.sh --latest
 
 - macOS: primary tested platform
 - Windows: launcher scripts are included, and GitHub Actions can build standalone `exe` release assets
+- macOS release workflow supports Developer ID signing and notarization once Apple credentials are configured
 - Linux: the shell launchers should work if Tkinter is available
 
 ## Launch Copy

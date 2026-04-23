@@ -1,0 +1,93 @@
+name: Build macOS Release
+
+on:
+  release:
+    types:
+      - published
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag, for example v0.2.1
+        required: true
+        type: string
+      version:
+        description: Optional app version override, for example 26.4.23.1
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || github.event.inputs.tag }}
+      CODEX_SCOPE_VERSION: ${{ github.event.inputs.version }}
+      CODEX_SCOPE_NOTARY_KEYCHAIN_PROFILE: codex-scope-notary
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'release' && github.event.release.tag_name || github.ref_name }}
+
+      - name: Import Apple certificate
+        env:
+          BUILD_CERTIFICATE_BASE64: ${{ secrets.MACOS_DEVELOPER_ID_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.MACOS_DEVELOPER_ID_P12_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
+        run: |
+          CERT_PATH="$RUNNER_TEMP/codex-scope-dev-id.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/codex-scope-build.keychain-db"
+          echo "$BUILD_CERTIFICATE_BASE64" | base64 --decode > "$CERT_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+      - name: Detect signing identity
+        run: |
+          SIGN_IDENTITY="$(security find-identity -v -p codesigning | awk -F\" '/Developer ID Application/ {print $2; exit}')"
+          if [[ -z "$SIGN_IDENTITY" ]]; then
+            echo "Developer ID Application identity not found" >&2
+            exit 1
+          fi
+          echo "CODEX_SCOPE_APP_SIGN_IDENTITY=$SIGN_IDENTITY" >> "$GITHUB_ENV"
+
+      - name: Configure notarytool profile
+        env:
+          APPLE_ID: ${{ secrets.MACOS_NOTARY_APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.MACOS_NOTARY_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.MACOS_NOTARY_APP_PASSWORD }}
+        run: |
+          xcrun notarytool store-credentials "$CODEX_SCOPE_NOTARY_KEYCHAIN_PROFILE" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD"
+
+      - name: Build signed and notarized macOS app
+        run: bash scripts/build_macos_app.sh
+
+      - name: Verify notarized app
+        run: |
+          spctl --assess --type open --verbose dist/Codex-Scope-macOS.dmg
+          spctl --assess --type execute --verbose "dist/Codex Scope.app"
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-scope-macos-${{ env.RELEASE_TAG }}
+          path: |
+            dist/Codex-Scope-macOS.dmg
+            dist/Codex Scope.app
+
+      - name: Attach assets to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          files: |
+            dist/Codex-Scope-macOS.dmg
+          fail_on_unmatched_files: true

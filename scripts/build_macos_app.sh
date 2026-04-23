@@ -9,11 +9,14 @@ VENV_DIR="$ROOT_DIR/.venv"
 ICON_SRC="$ROOT_DIR/assets/app-icon.png"
 ICNS_PATH="$ROOT_DIR/assets/CodexScope.icns"
 APP_NAME="Codex Scope"
+BUNDLE_ID="${CODEX_SCOPE_BUNDLE_ID:-com.xiaobin.codexscope}"
 APP_VERSION="${CODEX_SCOPE_VERSION:-}"
 APP_PATH="$ROOT_DIR/dist/$APP_NAME.app"
 DMG_PATH="$ROOT_DIR/dist/Codex-Scope-macOS.dmg"
 DMG_STAGE_DIR="$ROOT_DIR/build/dmg"
 DMG_VOLUME_NAME="Codex Scope Installer"
+APP_SIGN_IDENTITY="${CODEX_SCOPE_APP_SIGN_IDENTITY:-}"
+NOTARY_KEYCHAIN_PROFILE="${CODEX_SCOPE_NOTARY_KEYCHAIN_PROFILE:-}"
 
 if [[ -z "$APP_VERSION" && -f "$ROOT_DIR/VERSION" ]]; then
   APP_VERSION="$(tr -d '\r\n' < "$ROOT_DIR/VERSION")"
@@ -60,13 +63,13 @@ PYINSTALLER_CONFIG_DIR=/tmp/pyinstaller "$VENV_DIR/bin/pyinstaller" \
   --windowed \
   --name "$APP_NAME" \
   --icon "$ICNS_PATH" \
-  --osx-bundle-identifier "com.xiaobin.codexscope" \
+  --osx-bundle-identifier "$BUNDLE_ID" \
   --hidden-import codex_continue_summary \
   --hidden-import codex_context_inspector \
   --hidden-import codex_i18n \
   "$ROOT_DIR/codex_token_widget.py"
 
-/usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.xiaobin.codexscope" "$APP_PATH/Contents/Info.plist" >/dev/null
+/usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $BUNDLE_ID" "$APP_PATH/Contents/Info.plist" >/dev/null
 /usr/libexec/PlistBuddy -c "Set :CFBundleName $APP_NAME" "$APP_PATH/Contents/Info.plist" >/dev/null
 /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName $APP_NAME" "$APP_PATH/Contents/Info.plist" >/dev/null
 /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string $APP_VERSION" "$APP_PATH/Contents/Info.plist" 2>/dev/null || \
@@ -80,6 +83,16 @@ PYINSTALLER_CONFIG_DIR=/tmp/pyinstaller "$VENV_DIR/bin/pyinstaller" \
 /usr/libexec/PlistBuddy -c "Add :NSHumanReadableCopyright string xiaobin · happyyou2009@gmail.com" "$APP_PATH/Contents/Info.plist" 2>/dev/null || \
   /usr/libexec/PlistBuddy -c "Set :NSHumanReadableCopyright xiaobin · happyyou2009@gmail.com" "$APP_PATH/Contents/Info.plist"
 
+if [[ -n "$APP_SIGN_IDENTITY" ]]; then
+  codesign \
+    --force \
+    --deep \
+    --options runtime \
+    --timestamp \
+    --sign "$APP_SIGN_IDENTITY" \
+    "$APP_PATH"
+fi
+
 rm -rf "$DMG_STAGE_DIR" "$DMG_PATH"
 mkdir -p "$DMG_STAGE_DIR"
 cp -R "$APP_PATH" "$DMG_STAGE_DIR/"
@@ -92,6 +105,28 @@ hdiutil create \
   -format UDZO \
   "$DMG_PATH" >/dev/null
 
+if [[ -n "$APP_SIGN_IDENTITY" ]]; then
+  codesign \
+    --force \
+    --timestamp \
+    --sign "$APP_SIGN_IDENTITY" \
+    "$DMG_PATH"
+fi
+
+if [[ -n "$NOTARY_KEYCHAIN_PROFILE" ]]; then
+  xcrun notarytool submit "$DMG_PATH" \
+    --keychain-profile "$NOTARY_KEYCHAIN_PROFILE" \
+    --wait
+  xcrun stapler staple "$APP_PATH"
+  xcrun stapler staple "$DMG_PATH"
+fi
+
 echo "Built app: $APP_PATH"
 echo "App version: $APP_VERSION"
 echo "Release dmg: $DMG_PATH"
+if [[ -n "$APP_SIGN_IDENTITY" ]]; then
+  echo "Codesigned with: $APP_SIGN_IDENTITY"
+fi
+if [[ -n "$NOTARY_KEYCHAIN_PROFILE" ]]; then
+  echo "Notarized with profile: $NOTARY_KEYCHAIN_PROFILE"
+fi
