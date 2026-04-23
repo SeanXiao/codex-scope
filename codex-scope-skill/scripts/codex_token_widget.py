@@ -27,6 +27,7 @@ import tkinter as tk
 from tkinter import scrolledtext
 from tkinter import font as tkfont
 from tkinter import messagebox
+from tkinter import ttk
 
 from codex_i18n import get_label, get_string, load_language, normalize_language, save_language
 from codex_context_inspector import detect_codex_home, iter_session_paths, load_threads, parse_session
@@ -225,6 +226,18 @@ def shorten(text: str, max_chars: int) -> str:
     if max_chars <= 0 or len(text) <= max_chars:
         return text
     return text[: max_chars - 3] + "..."
+
+
+def ensure_text(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (list, tuple, set)):
+        return " / ".join(part for part in (ensure_text(item).strip() for item in value) if part)
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    return str(value)
 
 
 @dataclass
@@ -453,7 +466,7 @@ class SessionCache:
         else:
             total_tokens = sum(item.total_tokens for item in requests)
 
-        title = getattr(record, "title", "") if record is not None else ""
+        title = ensure_text(getattr(record, "title", "")) if record is not None else ""
         updated_at = getattr(record, "updated_at", 0) if record is not None else 0
         if not updated_at:
             try:
@@ -464,7 +477,7 @@ class SessionCache:
         return SessionSnapshot(
             thread_id=parsed.thread_id or "unknown",
             session_file=path,
-            title=title.strip() or path.stem,
+            title=ensure_text(title).strip() or path.stem,
             updated_at=updated_at,
             total_tokens=total_tokens,
             requests=requests,
@@ -614,6 +627,7 @@ class TokenMonitorWidget:
         self.metric_font = tkfont.Font(family="PingFang SC", size=22, weight="bold")
         self.small_font = tkfont.Font(family="PingFang SC", size=11)
         self.tiny_font = tkfont.Font(family="PingFang SC", size=10)
+        self._init_detail_styles()
 
         self._build_ui()
         self.window.deiconify()
@@ -624,7 +638,7 @@ class TokenMonitorWidget:
         return get_string(key, self.lang, **kwargs)
 
     def _label(self, key: str) -> str:
-        return get_label(key, self.lang)
+        return ensure_text(get_label(key, self.lang))
 
     def _load_state(self) -> Dict[str, object]:
         if WIDGET_STATE_PATH.exists():
@@ -793,6 +807,139 @@ class TokenMonitorWidget:
         button.configure(highlightbackground=border)
         return button
 
+    def _init_detail_styles(self) -> None:
+        style = ttk.Style(self.window)
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+        style.configure("CodexScope.TNotebook", background=DETAIL_BG, borderwidth=0, tabmargins=(0, 0, 0, 0))
+        style.configure(
+            "CodexScope.TNotebook.Tab",
+            background=DETAIL_TEXT_BG,
+            foreground=TEXT_MUTED,
+            padding=(14, 8),
+            borderwidth=0,
+        )
+        style.map(
+            "CodexScope.TNotebook.Tab",
+            background=[("selected", "#18243c"), ("active", "#16233a")],
+            foreground=[("selected", "#f8fafc"), ("active", "#eff6ff")],
+        )
+
+    def _detail_color(self, label: str, index: int = 0) -> str:
+        return BREAKDOWN_COLORS.get(label, PIE_FALLBACK_COLORS[index % len(PIE_FALLBACK_COLORS)])
+
+    def _create_detail_notebook(self, parent: tk.Widget) -> ttk.Notebook:
+        notebook = ttk.Notebook(parent, style="CodexScope.TNotebook")
+        notebook.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        return notebook
+
+    def _create_tagged_detail_text(self, parent: tk.Widget) -> scrolledtext.ScrolledText:
+        text = self._create_detail_text(parent)
+        text.tag_configure("section", foreground="#dbeafe", font=("Menlo", 12, "bold"))
+        text.tag_configure("meta_key", foreground="#93c5fd", font=("Menlo", 11, "bold"))
+        text.tag_configure("meta_value", foreground=DETAIL_TEXT_FG, font=("Menlo", 11))
+        text.tag_configure("body", foreground=DETAIL_TEXT_FG, font=("Menlo", 11))
+        return text
+
+    def _append_meta_line(self, text: scrolledtext.ScrolledText, key: str, value: str, value_tag: str = "meta_value") -> None:
+        text.insert("end", f"{ensure_text(key)}: ", ("meta_key",))
+        text.insert("end", f"{ensure_text(value)}\n", (value_tag,))
+
+    def _append_content_block(self, text: scrolledtext.ScrolledText, header: str, body: str, color_tag: str) -> None:
+        text.insert("end", f"{ensure_text(header)}\n", ("section", color_tag))
+        text.insert("end", ensure_text(body).rstrip() + "\n\n", ("body",))
+
+    def _build_breakdown_summary_panel(
+        self,
+        parent: tk.Widget,
+        rows: Sequence[Tuple[str, int, int]],
+        *,
+        title: str,
+        total_tokens: int,
+    ) -> None:
+        shell = tk.Frame(parent, bg=DETAIL_BG)
+        shell.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+
+        title_label = tk.Label(shell, text=title, fg="#dbeafe", bg=DETAIL_BG, anchor="w", font=self.small_font)
+        title_label.pack(fill="x", pady=(0, 8))
+
+        grid = tk.Frame(shell, bg=DETAIL_BG)
+        grid.pack(fill="both", expand=True)
+        for idx, (label, tokens, count) in enumerate(rows):
+            color = self._detail_color(label, idx)
+            card = tk.Frame(grid, bg=DETAIL_TEXT_BG, highlightbackground=BORDER_COLOR, highlightthickness=1)
+            row = idx // 2
+            col = idx % 2
+            card.grid(row=row, column=col, sticky="nsew", padx=(0, 8) if col == 0 else (8, 0), pady=(0, 8))
+            grid.grid_columnconfigure(col, weight=1)
+
+            pct = (tokens / total_tokens * 100.0) if total_tokens > 0 else 0.0
+            tk.Label(card, text=self._label(label), fg=color, bg=DETAIL_TEXT_BG, anchor="w", font=self.small_font).pack(fill="x", padx=12, pady=(10, 4))
+            tk.Label(card, text=fmt_k(tokens), fg="#f8fafc", bg=DETAIL_TEXT_BG, anchor="w", font=self.metric_font).pack(fill="x", padx=12)
+            detail_text = (
+                f"{pct:.1f}% / {count} items"
+                if self.lang == "en"
+                else f"{pct:.1f}% / {count} 项"
+            )
+            tk.Label(card, text=detail_text, fg=TEXT_MUTED, bg=DETAIL_TEXT_BG, anchor="w", font=self.tiny_font).pack(fill="x", padx=12, pady=(4, 10))
+
+    def _build_category_browser(
+        self,
+        parent: tk.Widget,
+        grouped: Dict[str, List[object]],
+        render_item,
+    ) -> None:
+        pane = tk.PanedWindow(parent, orient="horizontal", bg=DETAIL_BG, sashwidth=8, sashrelief="flat")
+        pane.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+
+        nav = tk.Frame(pane, bg=DETAIL_BG)
+        body = tk.Frame(pane, bg=DETAIL_BG)
+        pane.add(nav, minsize=220)
+        pane.add(body, minsize=520)
+
+        text = self._create_tagged_detail_text(body)
+        categories = list(grouped.keys())
+        if not categories:
+            text.insert("1.0", self._t("detail.output.none"))
+            text.configure(state="disabled")
+            return
+
+        def show_category(category: str) -> None:
+            text.configure(state="normal")
+            text.delete("1.0", "end")
+            color = self._detail_color(category, categories.index(category))
+            tag_name = f"category_{category}"
+            text.tag_configure(tag_name, foreground=color, font=("Menlo", 12, "bold"))
+            items = grouped.get(category, [])
+            self._append_content_block(
+                text,
+                f"{self._label(category)} ({len(items)})",
+                (
+                    "Use the items below to inspect this category."
+                    if self.lang == "en"
+                    else "下面按该分类展示明细，方便快速定位。"
+                ),
+                tag_name,
+            )
+            for idx, entry in enumerate(items, start=1):
+                render_item(text, entry, idx, tag_name)
+            text.configure(state="disabled")
+
+        for index, category in enumerate(categories):
+            color = self._detail_color(category, index)
+            button = self._make_detail_action_button(
+                nav,
+                text=f"{self._label(category)} ({len(grouped[category])})",
+                command=lambda category=category: show_category(category),
+                kind="secondary",
+            )
+            button.configure(fg=color)
+            button.pack(fill="x", pady=(0, 8))
+
+        show_category(categories[0])
+
     def _set_metric(self, frame: tk.Frame, value: str, detail: str, color: str = "#f8fafc") -> None:
         frame.value_label.config(text=value, fg=color)  # type: ignore[attr-defined]
         frame.detail_label.config(text=detail)  # type: ignore[attr-defined]
@@ -955,7 +1102,7 @@ class TokenMonitorWidget:
             color=METRIC_BLUE,
         )
 
-        self._render_color_legend()
+        self._render_color_legend(snapshot)
         self._update_footer_labels(snapshot)
 
         self._render_chart(snapshot)
@@ -1342,9 +1489,36 @@ class TokenMonitorWidget:
         context_items = parsed.transcript_pool[: call.context_end_index]
         return self._estimate_upstream_attribution(context_items, item.upstream_tokens, item.cached_input_tokens)
 
-    def _render_color_legend(self) -> None:
+    def _render_color_legend(self, snapshot: DashboardSnapshot) -> None:
         for child in self.legend_frame.winfo_children():
             child.destroy()
+
+        items = self._visible_chart_items(snapshot)
+        turn_order: List[str] = []
+        for item in items:
+            if item.turn_id not in turn_order:
+                turn_order.append(item.turn_id)
+        if not turn_order:
+            return
+
+        row = tk.Frame(self.legend_frame, bg=SURFACE_BG)
+        row.pack(fill="x")
+        turn_totals = self._turn_total_map(snapshot)
+        for index, turn_id in enumerate(turn_order):
+            turn_tag = chr(ord("A") + index) if index < 26 else f"T{index + 1}"
+            total_tokens = turn_totals[turn_id]
+            label = (
+                f"{turn_tag} {fmt_eng_unit_compact(total_tokens)}"
+                if self.lang == "en"
+                else f"{turn_tag} 本轮 {fmt_k_compact(total_tokens)}"
+            )
+            button = self._make_detail_action_button(
+                row,
+                text=label,
+                command=lambda turn_id=turn_id: self._open_turn_detail(turn_id),
+                kind="secondary",
+            )
+            button.pack(side="left", padx=(0, 8), pady=(0, 2))
 
     def _draw_breakdown_pie(
         self,
@@ -1553,39 +1727,61 @@ class TokenMonitorWidget:
             subheader_text=self._t("detail.upstream.subheader"),
             subheader_fg="#93c5fd",
         )
+        notebook = self._create_detail_notebook(detail_window)
 
-        self._attach_detail_chart(detail_window, breakdown, self._t("detail.upstream.pie_title"))
+        overview_tab = tk.Frame(notebook, bg=DETAIL_BG)
+        categories_tab = tk.Frame(notebook, bg=DETAIL_BG)
+        all_items_tab = tk.Frame(notebook, bg=DETAIL_BG)
+        notebook.add(overview_tab, text="Overview" if self.lang == "en" else "概览")
+        notebook.add(categories_tab, text="Categories" if self.lang == "en" else "分类")
+        notebook.add(all_items_tab, text="All Items" if self.lang == "en" else "全部明细")
 
-        text = self._create_detail_text(detail_window)
+        self._attach_detail_chart(overview_tab, breakdown, self._t("detail.upstream.pie_title"))
+        self._build_breakdown_summary_panel(
+            overview_tab,
+            [(label, tokens, count) for label, tokens, count in breakdown],
+            title=self._t("detail.breakdown.title"),
+            total_tokens=max(item.upstream_tokens, 1),
+        )
 
-        parts: List[str] = []
-        parts.append(f"session_file: {item.session_file}")
-        parts.append(f"thread_id: {item.thread_id}")
-        parts.append(f"turn_id: {item.turn_id}")
-        parts.append(f"call_index: {item.call_index}")
-        parts.append("")
-        parts.append(self._t("detail.attr.title"))
-        for _key, label, tokens, pct in attribution:
-            parts.append(f"- {self._label(label)}: {fmt_k(tokens)}  /  {pct * 100:.1f}%")
-        parts.append("")
-        parts.append(self._t("detail.breakdown.title"))
-        for label, tokens, count in breakdown:
-            item_suffix = " items" if self.lang == "en" else " 项"
-            parts.append(f"- {self._label(label)}: {fmt_k(tokens)}  /  {count}{item_suffix}")
-        parts.append("")
+        grouped_context: Dict[str, List[object]] = defaultdict(list)
+        for ctx in context_items:
+            grouped_context[self._category_label(ctx)].append(ctx)
 
+        def render_context_item(text: scrolledtext.ScrolledText, ctx: object, idx: int, tag_name: str) -> None:
+            self._append_content_block(text, self._t("detail.context_item", idx=idx), "", tag_name)
+            self._append_meta_line(text, "role", ensure_text(getattr(ctx, "role", "")))
+            self._append_meta_line(text, "kind", ensure_text(getattr(ctx, "kind", "")))
+            self._append_meta_line(text, "title", ensure_text(getattr(ctx, "title", "")))
+            self._append_meta_line(text, "category", self._label(self._category_label(ctx)), tag_name)
+            self._append_meta_line(text, "content", "")
+            text.insert("end", ensure_text(getattr(ctx, "text", "")) + "\n\n", ("body",))
+
+        self._build_category_browser(categories_tab, grouped_context, render_context_item)
+
+        all_text = self._create_tagged_detail_text(all_items_tab)
+        self._append_meta_line(all_text, "session_file", str(item.session_file))
+        self._append_meta_line(all_text, "thread_id", item.thread_id)
+        self._append_meta_line(all_text, "turn_id", item.turn_id)
+        self._append_meta_line(all_text, "call_index", str(item.call_index))
+        all_text.insert("end", "\n", ("body",))
+        for idx, (_key, label, tokens, pct) in enumerate(attribution, start=1):
+            tag_name = f"attr_{label}"
+            all_text.tag_configure(tag_name, foreground=self._detail_color(label, idx - 1), font=("Menlo", 11, "bold"))
+            item_suffix = "items" if self.lang == "en" else "项"
+            self._append_meta_line(
+                all_text,
+                f"{idx}. {self._label(label)}",
+                f"{fmt_k(tokens)} / {pct * 100:.1f}% / {next((count for cat, _tokens, count in breakdown if cat == label), 0)} {item_suffix}",
+                tag_name,
+            )
+        all_text.insert("end", "\n", ("body",))
         for idx, ctx in enumerate(context_items, start=1):
-            parts.append(self._t("detail.context_item", idx=idx))
-            parts.append(f"role: {ctx.role}")
-            parts.append(f"kind: {ctx.kind}")
-            parts.append(f"title: {ctx.title}")
-            parts.append(self._t("detail.category", label=self._label(self._category_label(ctx))))
-            parts.append(self._t("detail.content"))
-            parts.append(ctx.text)
-            parts.append("")
-
-        text.insert("1.0", "\n".join(parts))
-        text.configure(state="disabled")
+            category = self._category_label(ctx)
+            tag_name = f"all_{category}"
+            all_text.tag_configure(tag_name, foreground=self._detail_color(category, idx - 1), font=("Menlo", 12, "bold"))
+            render_context_item(all_text, ctx, idx, tag_name)
+        all_text.configure(state="disabled")
 
     def _open_downstream_detail(self, item: RequestPoint) -> None:
         parsed = parse_session(item.session_file)
@@ -1608,30 +1804,51 @@ class TokenMonitorWidget:
         )
 
         breakdown = self._load_downstream_breakdown(item)
-        self._attach_detail_chart(detail_window, breakdown, self._t("detail.downstream.pie_title"))
+        notebook = self._create_detail_notebook(detail_window)
 
-        text = self._create_detail_text(detail_window)
+        overview_tab = tk.Frame(notebook, bg=DETAIL_BG)
+        categories_tab = tk.Frame(notebook, bg=DETAIL_BG)
+        all_items_tab = tk.Frame(notebook, bg=DETAIL_BG)
+        notebook.add(overview_tab, text="Overview" if self.lang == "en" else "概览")
+        notebook.add(categories_tab, text="Categories" if self.lang == "en" else "分类")
+        notebook.add(all_items_tab, text="All Outputs" if self.lang == "en" else "全部输出")
 
-        parts: List[str] = []
-        parts.append(f"session_file: {item.session_file}")
-        parts.append(f"thread_id: {item.thread_id}")
-        parts.append(f"turn_id: {item.turn_id}")
-        parts.append(f"call_index: {item.call_index}")
-        parts.append("")
-        for idx, out in enumerate(call.output_items, start=1):
-            parts.append(self._t("detail.output_item", idx=idx))
-            parts.append(f"role: {out.role}")
-            parts.append(f"kind: {out.kind}")
-            parts.append(f"title: {out.title}")
-            parts.append(self._t("detail.content"))
-            parts.append(out.text)
-            parts.append("")
+        self._attach_detail_chart(overview_tab, breakdown, self._t("detail.downstream.pie_title"))
+        self._build_breakdown_summary_panel(
+            overview_tab,
+            [(label, tokens, count) for label, tokens, count in breakdown],
+            title=self._t("detail.downstream.pie_title"),
+            total_tokens=max(item.downstream_tokens, 1),
+        )
 
+        grouped_outputs: Dict[str, List[object]] = defaultdict(list)
+        for out in call.output_items:
+            grouped_outputs[self._downstream_label(out)].append(out)
+
+        def render_output_item(text: scrolledtext.ScrolledText, out: object, idx: int, tag_name: str) -> None:
+            self._append_content_block(text, self._t("detail.output_item", idx=idx), "", tag_name)
+            self._append_meta_line(text, "role", ensure_text(getattr(out, "role", "")))
+            self._append_meta_line(text, "kind", ensure_text(getattr(out, "kind", "")))
+            self._append_meta_line(text, "title", ensure_text(getattr(out, "title", "")))
+            self._append_meta_line(text, "content", "")
+            text.insert("end", ensure_text(getattr(out, "text", "")) + "\n\n", ("body",))
+
+        self._build_category_browser(categories_tab, grouped_outputs, render_output_item)
+
+        all_text = self._create_tagged_detail_text(all_items_tab)
+        self._append_meta_line(all_text, "session_file", str(item.session_file))
+        self._append_meta_line(all_text, "thread_id", item.thread_id)
+        self._append_meta_line(all_text, "turn_id", item.turn_id)
+        self._append_meta_line(all_text, "call_index", str(item.call_index))
+        all_text.insert("end", "\n", ("body",))
         if not call.output_items:
-            parts.append(self._t("detail.output.none"))
-
-        text.insert("1.0", "\n".join(parts))
-        text.configure(state="disabled")
+            all_text.insert("end", self._t("detail.output.none"), ("body",))
+        for idx, out in enumerate(call.output_items, start=1):
+            category = self._downstream_label(out)
+            tag_name = f"down_{category}"
+            all_text.tag_configure(tag_name, foreground=self._detail_color(category, idx - 1), font=("Menlo", 12, "bold"))
+            render_output_item(all_text, out, idx, tag_name)
+        all_text.configure(state="disabled")
 
     def _draw_chart(self, snapshot: DashboardSnapshot, row_offset: float = 0.0) -> None:
         canvas = self.canvas

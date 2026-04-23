@@ -124,12 +124,12 @@ def load_threads(codex_home: Path) -> Dict[str, ThreadRecord]:
             thread_id=row["id"],
             rollout_path=rollout_path,
             updated_at=row["updated_at"],
-            title=row["title"] or "",
-            model=row["model"],
+            title=normalize_text(row["title"]),
+            model=normalize_text(row["model"]) or None,
             tokens_used=int(row["tokens_used"] or 0),
-            cwd=row["cwd"] or "",
-            source=row["source"] or "",
-            provider=row["model_provider"] or "",
+            cwd=normalize_text(row["cwd"]),
+            source=normalize_text(row["source"]),
+            provider=normalize_text(row["model_provider"]),
         )
     return threads
 
@@ -188,6 +188,18 @@ def shorten(text: str, max_chars: int) -> str:
     if max_chars <= 0 or len(text) <= max_chars:
         return text
     return text[: max_chars - 3] + "..."
+
+
+def normalize_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (list, tuple, set)):
+        return " / ".join(part for part in (normalize_text(item).strip() for item in value) if part)
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    return str(value)
 
 
 def parse_session(path: Path) -> ParsedSession:
