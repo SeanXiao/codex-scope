@@ -1,0 +1,58 @@
+name: Build Windows Release
+
+on:
+  release:
+    types:
+      - published
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag, for example v0.2.1
+        required: true
+        type: string
+      version:
+        description: Optional app version override, for example 26.4.23.1
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || github.event.inputs.tag }}
+      CODEX_SCOPE_VERSION: ${{ github.event.inputs.version }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'release' && github.event.release.tag_name || github.event.inputs.tag }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Build Windows executable
+        shell: cmd
+        run: scripts\build_windows_exe.bat
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-scope-windows-${{ env.RELEASE_TAG }}
+          path: |
+            dist/Codex-Scope.exe
+            dist/Codex-Scope-windows.zip
+
+      - name: Attach assets to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          files: |
+            dist/Codex-Scope.exe
+            dist/Codex-Scope-windows.zip
+          fail_on_unmatched_files: true

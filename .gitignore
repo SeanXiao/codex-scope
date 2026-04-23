@@ -8,3 +8,4 @@ dist/
 build/
 *.spec
 .venv/
+assets/CodexScope.ico

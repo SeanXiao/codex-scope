@@ -13,7 +13,9 @@ Author:
 ## Download
 
 - Latest macOS app: [GitHub Releases](https://github.com/SeanXiao/codex-scope/releases/latest)
+- Latest Windows app: [GitHub Releases](https://github.com/SeanXiao/codex-scope/releases/latest)
 - Release artifact name: `Codex-Scope-macOS.dmg`
+- Release artifact names: `Codex-Scope.exe`, `Codex-Scope-windows.zip`
 
 It reads data already stored on your machine and helps you understand:
 
@@ -138,6 +140,7 @@ On Windows you can use:
 
 - `scripts\launch_monitor.cmd`
 - `scripts\launch_continue_summary.cmd`
+- `scripts\build_windows_exe.bat`
 
 ## Common Commands
 
@@ -180,7 +183,7 @@ bash scripts/launch_continue_summary.sh --latest
 ## Platform Support
 
 - macOS: primary tested platform
-- Windows: launcher scripts are included; you need Python 3.11+ with Tk support
+- Windows: launcher scripts are included, and GitHub Actions can build standalone `exe` release assets
 - Linux: the shell launchers should work if Tkinter is available
 
 ## Launch Copy

@@ -9,11 +9,19 @@ VENV_DIR="$ROOT_DIR/.venv"
 ICON_SRC="$ROOT_DIR/assets/app-icon.png"
 ICNS_PATH="$ROOT_DIR/assets/CodexScope.icns"
 APP_NAME="Codex Scope"
-APP_VERSION="${CODEX_SCOPE_VERSION:-26.4.23.1}"
+APP_VERSION="${CODEX_SCOPE_VERSION:-}"
 APP_PATH="$ROOT_DIR/dist/$APP_NAME.app"
 DMG_PATH="$ROOT_DIR/dist/Codex-Scope-macOS.dmg"
 DMG_STAGE_DIR="$ROOT_DIR/build/dmg"
 DMG_VOLUME_NAME="Codex Scope Installer"
+
+if [[ -z "$APP_VERSION" && -f "$ROOT_DIR/VERSION" ]]; then
+  APP_VERSION="$(tr -d '\r\n' < "$ROOT_DIR/VERSION")"
+fi
+
+if [[ -z "$APP_VERSION" ]]; then
+  APP_VERSION="26.4.23.1"
+fi
 
 if [[ ! -x "$PYTHON_BIN" ]]; then
   echo "Python runtime not found: $PYTHON_BIN" >&2
