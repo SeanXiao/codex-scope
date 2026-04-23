@@ -6,6 +6,10 @@ Suggested GitHub repository description:
 
 `Local observability toolkit for Codex sessions with exact token accounting, context inspection, and continue cards.`
 
+Author:
+
+`xiaobin` · `happyyou2009@gmail.com`
+
 It reads data already stored on your machine and helps you understand:
 
 - how many tokens each model call actually used
