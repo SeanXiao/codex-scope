@@ -37,8 +37,7 @@ jobs:
           python-version: '3.13'
 
       - name: Build Windows executable
-        shell: cmd
-        run: scripts\build_windows_exe.bat
+        run: python scripts/build_windows_exe.py
 
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4
