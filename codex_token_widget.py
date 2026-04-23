@@ -593,7 +593,6 @@ class TokenMonitorWidget:
         self.root.withdraw()
         self.window = tk.Toplevel(self.root)
         self.window.overrideredirect(self.use_borderless)
-        self.window.attributes("-topmost", True)
         self.window.title(self._t("monitor.window_title"))
         self.window.configure(bg=WINDOW_BG)
 
