@@ -10,11 +10,53 @@ Author:
 
 `xiaobin` · `happyyou2009@gmail.com`
 
-## Download
+## Recommended Usage
 
-- Latest macOS app: [GitHub Releases](https://github.com/SeanXiao/codex-scope/releases/latest)
+Current recommendation:
+
+- macOS: run from source
+- Windows: download the packaged release from GitHub Releases
+
+This keeps the setup simple while the macOS signed/notarized release pipeline is still being finalized.
+
+## Quick Start
+
+Clone the repo and launch the monitor:
+
+```bash
+git clone git@github.com:SeanXiao/codex-scope.git
+cd codex-scope
+bash scripts/launch_monitor.sh
+```
+
+Launch the continue-card tool:
+
+```bash
+bash scripts/launch_continue_summary.sh
+```
+
+Launch with Chinese UI explicitly:
+
+```bash
+bash scripts/launch_monitor.sh --lang zh
+```
+
+Show a summary for the latest session:
+
+```bash
+python3 codex_context_inspector.py summary --latest
+```
+
+On Windows you can use:
+
+- `scripts\launch_monitor.cmd`
+- `scripts\launch_continue_summary.cmd`
+- or download the packaged release from GitHub Releases
+
+## Downloads
+
 - Latest Windows app: [GitHub Releases](https://github.com/SeanXiao/codex-scope/releases/latest)
-- Release artifact name: `Codex-Scope-macOS.dmg`
+- macOS: source run is currently recommended
 - Release artifact names: `Codex-Scope.exe`, `Codex-Scope-windows.zip`
 - Signed macOS release pipeline setup: [`docs/macos-release.md`](docs/macos-release.md)
 
@@ -108,41 +150,6 @@ It does not rely on packet capture or proxying model traffic.
 - `codex_continue_summary.py`
   Continue-card UI and summary generation logic.
 
-## Quick Start
-
-Show a summary for the latest session:
-
-```bash
-cd /Users/sean_1/codex/codex-tool
-python3 codex_context_inspector.py summary --latest
-```
-
-Launch the monitor widget:
-
-```bash
-cd /Users/sean_1/codex/codex-tool
-bash scripts/launch_monitor.sh
-```
-
-Launch the continue-card tool:
-
-```bash
-cd /Users/sean_1/codex/codex-tool
-bash scripts/launch_continue_summary.sh
-```
-
-Launch with Chinese UI explicitly:
-
-```bash
-bash scripts/launch_monitor.sh --lang zh
-```
-
-On Windows you can use:
-
-- `scripts\launch_monitor.cmd`
-- `scripts\launch_continue_summary.cmd`
-- `scripts\build_windows_exe.bat`
-
 ## Common Commands
 
 List recent sessions:
@@ -183,8 +190,8 @@ bash scripts/launch_continue_summary.sh --latest
 
 ## Platform Support
 
-- macOS: primary tested platform
-- Windows: launcher scripts are included, and GitHub Actions can build standalone `exe` release assets
+- macOS: primary tested platform, currently recommended to run from source
+- Windows: launcher scripts are included, and GitHub Actions build standalone `exe` release assets
 - macOS release workflow supports Developer ID signing and notarization once Apple credentials are configured
 - Linux: the shell launchers should work if Tkinter is available
 
