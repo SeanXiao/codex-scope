@@ -13,9 +13,51 @@ It reads data already stored on your machine and helps you understand:
 - how usage changes across recent turns
 - how to generate a compact "continue card" for starting a fresh session
 
-![Codex Scope monitor dashboard](assets/monitor-dashboard.png)
+## UI Preview
 
-The screenshot above shows the English monitor dashboard with recent token activity, grouped turns, and a more detailed all-time total card.
+### 1. Live token monitor
+
+![Codex Scope monitor dashboard](assets/monitor-overview.png)
+
+The monitor gives you a compact, always-available view of:
+
+- recent request-by-request token movement
+- grouped turns with color-coded labels
+- today / yesterday / all-time totals
+- a quick way to jump into a specific turn continue card
+
+### 2. Request input breakdown
+
+![Request input overview](assets/request-input-overview.png)
+
+When a spike looks suspicious, you can open a request detail window and see:
+
+- the exact input / output / cache / total numbers for that request
+- a pie-style breakdown of what dominated the input context
+- color-matched summary cards for each category
+- a scrollable overview instead of a fixed-height wall of text
+
+### 3. Category-first inspection
+
+![Request input categories](assets/request-input-categories.png)
+
+The categories tab is designed for fast inspection when the context gets large:
+
+- left side: category navigation with counts
+- right side: the matching content for that category only
+- category colors stay consistent across the chart, summary cards, and detail view
+- useful for spotting whether growth came from tool output, developer prompt, runtime context, or user messages
+
+## Why It Helps
+
+Codex Scope is meant for the moment when a session starts feeling "too big" but the reason is unclear.
+
+It helps answer practical questions such as:
+
+- Which turn caused the jump?
+- Was the input dominated by tool output, history, or prompts?
+- Is cache doing useful work, or is the live context still too large?
+- Which category should I inspect first before I decide to continue, summarize, or restart?
 
 ## What It Reads
 
@@ -42,12 +84,6 @@ It does not rely on packet capture or proxying model traffic.
 
 - Bilingual desktop UI
   Lets you switch between English and Chinese, with English as the default language.
-
-## UI Preview
-
-- A floating desktop dashboard for recent token activity
-- Daily, previous-day, and cumulative usage totals
-- Grouped turn visibility for spotting spikes quickly
 
 ## Project Layout
 
