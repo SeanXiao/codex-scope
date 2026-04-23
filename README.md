@@ -10,6 +10,11 @@ Author:
 
 `xiaobin` · `happyyou2009@gmail.com`
 
+## Download
+
+- Latest macOS app: [GitHub Releases](https://github.com/SeanXiao/codex-scope/releases/latest)
+- Release artifact name: `Codex-Scope-macOS.zip`
+
 It reads data already stored on your machine and helps you understand:
 
 - how many tokens each model call actually used
