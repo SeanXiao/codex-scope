@@ -1,18 +1,19 @@
 @echo off
 setlocal EnableExtensions
 
-for %%I in ("%~dp0..") do set "ROOT_DIR=%%~fI"
+pushd "%~dp0.." || exit /b 1
+set "ROOT_DIR=%CD%"
 set "PYTHON_BIN="
-set "VENV_DIR=%ROOT_DIR%\.venv-win-build"
-set "ICON_SRC=%ROOT_DIR%\assets\app-icon.png"
-set "ICO_PATH=%ROOT_DIR%\assets\CodexScope.ico"
+set "VENV_DIR=.venv-win-build"
+set "ICON_SRC=assets\app-icon.png"
+set "ICO_PATH=assets\CodexScope.ico"
 set "APP_NAME=Codex-Scope"
 set "APP_VERSION=%CODEX_SCOPE_VERSION%"
-set "EXE_PATH=%ROOT_DIR%\dist\%APP_NAME%.exe"
-set "ZIP_PATH=%ROOT_DIR%\dist\Codex-Scope-windows.zip"
+set "EXE_PATH=dist\%APP_NAME%.exe"
+set "ZIP_PATH=dist\Codex-Scope-windows.zip"
 set "VERSION_FILE=%TEMP%\codex_scope_version_info.txt"
 
-if not defined APP_VERSION if exist "%ROOT_DIR%\VERSION" set /p APP_VERSION=<"%ROOT_DIR%\VERSION"
+if not defined APP_VERSION if exist "VERSION" set /p APP_VERSION=<"VERSION"
 if not defined APP_VERSION set "APP_VERSION=26.4.23.1"
 set "VERSION_FILE=%TEMP%\codex_scope_version_info.txt"
 
@@ -41,7 +42,7 @@ call "%VENV_DIR%\Scripts\python.exe" -c "from pathlib import Path; from PIL impo
 call "%VENV_DIR%\Scripts\python.exe" -c "import os, pathlib; version = os.environ['APP_VERSION']; parts = [int(part) for part in version.split('.') if part.strip()]; parts = (parts + [0, 0, 0, 0])[:4]; nums = ', '.join(map(str, parts)); text = f'''VSVersionInfo(\n  ffi=FixedFileInfo(\n    filevers=({nums}),\n    prodvers=({nums}),\n    mask=0x3f,\n    flags=0x0,\n    OS=0x40004,\n    fileType=0x1,\n    subtype=0x0,\n    date=(0, 0)\n  ),\n  kids=[\n    StringFileInfo([\n      StringTable(\n        u\"040904B0\",\n        [\n          StringStruct(u\"CompanyName\", u\"xiaobin\"),\n          StringStruct(u\"FileDescription\", u\"Codex Scope\"),\n          StringStruct(u\"FileVersion\", u\"{version}\"),\n          StringStruct(u\"InternalName\", u\"Codex-Scope\"),\n          StringStruct(u\"OriginalFilename\", u\"Codex-Scope.exe\"),\n          StringStruct(u\"ProductName\", u\"Codex Scope\"),\n          StringStruct(u\"ProductVersion\", u\"{version}\"),\n          StringStruct(u\"LegalCopyright\", u\"xiaobin | happyyou2009@gmail.com\")\n        ]\n      )\n    ]),\n    VarFileInfo([VarStruct(u\"Translation\", [1033, 1200])])\n  ]\n)\n'''; pathlib.Path(os.environ['VERSION_FILE']).write_text(text, encoding='utf-8')" || exit /b 1
 
 set "PYINSTALLER_CONFIG_DIR=%TEMP%\pyinstaller"
-call "%VENV_DIR%\Scripts\pyinstaller.exe" ^
+call "%VENV_DIR%\Scripts\python.exe" -m PyInstaller ^
   --noconfirm ^
   --clean ^
   --onefile ^
@@ -52,7 +53,7 @@ call "%VENV_DIR%\Scripts\pyinstaller.exe" ^
   --hidden-import codex_continue_summary ^
   --hidden-import codex_context_inspector ^
   --hidden-import codex_i18n ^
-  "%ROOT_DIR%\codex_token_widget.py" || exit /b 1
+  "codex_token_widget.py" || exit /b 1
 
 if exist "%ZIP_PATH%" del /f /q "%ZIP_PATH%"
 powershell -NoProfile -Command "Compress-Archive -Path '%EXE_PATH%' -DestinationPath '%ZIP_PATH%' -Force" || exit /b 1
@@ -60,6 +61,7 @@ powershell -NoProfile -Command "Compress-Archive -Path '%EXE_PATH%' -Destination
 echo Built exe: %EXE_PATH%
 echo Release zip: %ZIP_PATH%
 echo App version: %APP_VERSION%
+popd
 exit /b 0
 
 :find_python
