@@ -168,52 +168,6 @@ Print a continue card for the latest session:
 bash scripts/launch_continue_summary.sh --latest
 ```
 
-## Workbuddy Setup
-
-If you want teammates to launch Codex Scope from Workbuddy, use the monitor as the main entry point.
-
-Recommended Workbuddy configuration on macOS and Linux:
-
-- Working directory: the repository root
-- Command: `bash scripts/launch_monitor.sh --lang en`
-
-Recommended Workbuddy configuration on Windows:
-
-- Working directory: the repository root
-- Command: `scripts\launch_monitor.cmd --lang en`
-
-If Python is installed in a non-standard location, set this environment variable in Workbuddy:
-
-```bash
-CODEX_SCOPE_PYTHON=/path/to/python
-```
-
-Example:
-
-```bash
-CODEX_SCOPE_PYTHON=/opt/homebrew/bin/python3.13
-```
-
-Why this works:
-
-- Workbuddy does not need to know project internals
-- it only needs one stable main entry command
-- the launcher script auto-detects Python instead of relying on a hardcoded path
-
-Launcher priority order:
-
-- `CODEX_SCOPE_PYTHON`
-- `.venv/bin/python`
-- Homebrew Python
-- other non-system `python3`
-- fallback `python`
-
-Troubleshooting:
-
-- If Workbuddy reports a Python startup failure, do not call `python3 codex_token_widget.py` directly.
-- Use the launcher script instead: `bash scripts/launch_monitor.sh --lang en`
-- For GitHub distribution, the shell and Windows launchers are the recommended entry points.
-
 ## Platform Support
 
 - macOS: primary tested platform
