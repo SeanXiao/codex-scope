@@ -325,6 +325,7 @@ class DashboardSnapshot:
     all_total: int
     today_total_duration_seconds: float
     yesterday_total_duration_seconds: float
+    all_total_duration_seconds: float
     today_new_session_count: int
     today_turn_count: int
     yesterday_new_session_count: int
@@ -390,6 +391,7 @@ class SessionCache:
             turn_requests_map[(item.thread_id, item.turn_id)].append(item)
         today_total_duration_seconds = 0.0
         yesterday_total_duration_seconds = 0.0
+        all_total_duration_seconds = 0.0
         for requests in turn_requests_map.values():
             timestamps = [item.timestamp for item in requests if item.timestamp]
             if not timestamps:
@@ -397,6 +399,7 @@ class SessionCache:
             first_ts = min(timestamps)
             last_ts = max(timestamps)
             duration_seconds = max(0.0, (last_ts - first_ts).total_seconds())
+            all_total_duration_seconds += duration_seconds
             if first_ts.date() == today:
                 today_total_duration_seconds += duration_seconds
             elif first_ts.date() == yesterday:
@@ -443,6 +446,7 @@ class SessionCache:
             all_total=all_total,
             today_total_duration_seconds=today_total_duration_seconds,
             yesterday_total_duration_seconds=yesterday_total_duration_seconds,
+            all_total_duration_seconds=all_total_duration_seconds,
             today_new_session_count=today_new_session_count,
             today_turn_count=today_turn_count,
             yesterday_new_session_count=yesterday_new_session_count,
@@ -706,7 +710,7 @@ class TokenMonitorWidget:
         if self.latest_snapshot is None:
             self._set_metric_title(self.today_metric, self._t("monitor.metric.today_title", duration="-"))
             self._set_metric_title(self.yesterday_metric, self._t("monitor.metric.yesterday_title", duration="-"))
-            self._set_metric_title(self.all_metric, self._t("monitor.metric.total_title"))
+            self._set_metric_title(self.all_metric, self._t("monitor.metric.total_title", duration="-"))
 
     def _build_ui(self) -> None:
         outer = tk.Frame(self.window, bg=SURFACE_BG, highlightbackground=BORDER_COLOR, highlightthickness=1)
@@ -781,7 +785,7 @@ class TokenMonitorWidget:
         self.today_metric.pack(side="left", fill="both", expand=True, padx=(0, 4))
         self.yesterday_metric = self._make_metric(stats, self._t("monitor.metric.yesterday_title", duration="-"))
         self.yesterday_metric.pack(side="left", fill="both", expand=True, padx=4)
-        self.all_metric = self._make_metric(stats, self._t("monitor.metric.total_title"))
+        self.all_metric = self._make_metric(stats, self._t("monitor.metric.total_title", duration="-"))
         self.all_metric.pack(side="left", fill="both", expand=True, padx=(4, 0))
 
     def _make_metric(self, parent: tk.Widget, title: str) -> tk.Frame:
@@ -1154,7 +1158,10 @@ class TokenMonitorWidget:
             color="#8fc7ff",
         )
 
-        self._set_metric_title(self.all_metric, self._t("monitor.metric.total_title"))
+        self._set_metric_title(
+            self.all_metric,
+            self._t("monitor.metric.total_title", duration=fmt_duration(snapshot.all_total_duration_seconds, self.lang)),
+        )
         self._set_metric(
             self.all_metric,
             fmt_total_metric(snapshot.all_total),

@@ -43,7 +43,7 @@ STRINGS: Dict[str, Dict[str, str]] = {
     "monitor.status.error": {"en": "Error: {message}", "zh": "错误: {message}"},
     "monitor.metric.today_title": {"en": "Today (active {duration})", "zh": "今日（耗时 {duration}）"},
     "monitor.metric.yesterday_title": {"en": "Yesterday (active {duration})", "zh": "昨日（耗时 {duration}）"},
-    "monitor.metric.total_title": {"en": "All Time", "zh": "累计总量"},
+    "monitor.metric.total_title": {"en": "All Time (active {duration})", "zh": "累计总量（耗时 {duration}）"},
     "monitor.metric.today_detail": {
         "en": "{sessions} sessions / {turns} turns / {round_trips} requests",
         "zh": "{sessions} 会话 / {turns} 轮 / {round_trips} 往返",
